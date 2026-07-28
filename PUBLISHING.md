@@ -1,7 +1,8 @@
-# Publishing DeckView
+# Publishing FlatMap & DeckView
 
-DeckView `0.1.0` targets Slay the Spire 2 `v0.109.0`. Only publish a DLL after it has been
-built against and tested with that game version.
+FlatMap `0.2.0` and DeckView `0.2.0` target Slay the Spire 2 `v0.109.0`. Only publish DLLs
+built against and tested with that game version. (The pre-0.2.0 combined mod shipped as id
+`deckview`; since 0.2.0 the map lives in `flatmap` and `deckview` is the deck zoom only.)
 
 ## 1. Pre-release checks
 
@@ -17,16 +18,17 @@ From WSL, verify every private hook against the installed game:
 scripts/verify-hooks.sh
 ```
 
-Launch STS2 with Steam's **Play with Mods** option and check mini-cards, hover, all three checkboxes with mouse and controller,
+Launch STS2 with Steam's **Play with Mods** option and check mini-cards, hover, all checkboxes with mouse and controller,
 flat/classic map switching, controller map travel, and ESC/back. New users must not produce
-`MAPDUMP` log lines. The expected successful load line starts:
+`MAPDUMP` log lines. The expected successful load lines start:
 
 ```text
+[FlatMap] loaded — flat map view
 [DeckView] loaded — card scale x0.6, padding 24px
 ```
 
-If an update moved a hook, DeckView logs `DISABLED`, applies no behavior, and the vanilla UI
-continues. Do not publish that build for the new game version.
+If an update moved a hook, the affected mod logs `DISABLED`, applies no behavior, and the
+vanilla UI continues. Do not publish that build for the new game version.
 
 ## 2. Build the installable zip
 
@@ -36,15 +38,10 @@ After the checks above:
 .\scripts\package.ps1
 ```
 
-This creates `dist\deckview-0.1.0-sts2-0.109.0.zip` and its SHA-256 file. The archive contains:
+This creates `dist/flatmap-0.2.0-sts2-0.109.0.zip` and `dist/deckview-0.2.0-sts2-0.109.0.zip`
+with SHA-256 files. Each archive contains `<id>/<id>.dll` + `<id>/<id>.json`.
 
-```text
-deckview/
-├── deckview.dll
-└── deckview.json
-```
-
-Upload both files to a GitHub Release named `DeckView 0.1.0 for STS2 v0.109.0`.
+Upload the files to a GitHub Release named `FlatMap & DeckView 0.2.0 for STS2 v0.109.0`.
 Never bundle `sts2.dll`, `GodotSharp.dll`, or `0Harmony.dll`.
 
 ## 3. GitHub discovery metadata
@@ -71,8 +68,8 @@ https://github.com/megacrit/sts2-mod-uploader/releases and run it once to create
 
 Copy into its `content/` directory:
 
-- `bin/deckview.dll`
-- `workshop/content/deckview.json`
+- per mod: `bin/flatmap.dll` + `workshop/content/flatmap.json`, and
+  `deckview/bin/deckview.dll` + `workshop/content/deckview.json` (one Workshop item each)
 
 Copy `docs/images/deck-view.png` to the workspace root as `image.png`. Edit the generated
 `workshop.json` to set the title, description, visibility, tags, and change note; use the
@@ -80,7 +77,7 @@ uploader's generated field names as authoritative.
 
 Use:
 
-- **Title:** `DeckView — Zoomed-out Deck & Clearer Map`
+- **Titles:** `FlatMap — Whole-Act Map on One Screen` and `DeckView — Zoomed-out Deck Views`
 - **Tags:** `UI`, `Quality of Life`
 - **Preview:** workspace-root `image.png` (already below the 1 MB uploader limit)
 - **Visibility:** private for the first subscription test, then public

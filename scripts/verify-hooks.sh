@@ -55,10 +55,13 @@ MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen|IsTravelEnabled
 MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen|_mapPointDictionary
 MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen|_runState
 MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen|_marker
+MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen|_mapLegend
 MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapPoint|Point
 MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapPoint|State
 MegaCrit.Sts2.Core.Nodes.Screens.Map.NNormalMapPoint|_icon
+MegaCrit.Sts2.Core.Nodes.Screens.Map.NNormalMapPoint|_outline
 MegaCrit.Sts2.Core.Nodes.Screens.Map.NAncientMapPoint|_icon
+MegaCrit.Sts2.Core.Nodes.Screens.Map.NAncientMapPoint|_outline
 MegaCrit.Sts2.Core.Nodes.Screens.Map.NBossMapPoint|_placeholderImage
 MegaCrit.Sts2.Core.Map.MapPoint|coord
 MegaCrit.Sts2.Core.Map.MapPoint|PointType

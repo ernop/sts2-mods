@@ -15,13 +15,12 @@
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
   </PropertyGroup>
 
-  <!-- Error-handling mode. Default (dev) builds are STRICT: an unexpected integration failure in our
-       own patch code re-throws (crashes loudly) so we catch our bugs. The PUBLIC release build
-       (-p:DeckViewPublic=true, set by scripts/package.ps1) instead reverts to vanilla with a logged
-       warning, since we can't control which game version a player runs. Compatibility preflight
-       (missing hooks -> revert + warn) is unconditional in both. -->
-  <PropertyGroup Condition="'$(DeckViewPublic)' == 'true'">
-    <DefineConstants>$(DefineConstants);DECKVIEW_PUBLIC</DefineConstants>
+  <!-- Same strict-dev / public-release split as the FlatMap (map) mod: the -p:PublicBuild=true
+       property (set by scripts) selects revert-to-vanilla-with-warning instead of the dev-default
+       strict crash. The define name is shared so the runtime boilerplate stays textually identical
+       across the two mods. -->
+  <PropertyGroup Condition="'$(PublicBuild)' == 'true'">
+    <DefineConstants>$(DefineConstants);PUBLIC_BUILD</DefineConstants>
   </PropertyGroup>
 
   <!-- Path to the game's managed-DLL folder. Override with:
@@ -31,14 +30,6 @@
     <Sts2Data Condition="'$(Sts2Data)' == '' and '$(STS2_DATA)' != ''">$(STS2_DATA)</Sts2Data>
     <Sts2Data Condition="'$(Sts2Data)' == ''">C:\Program Files (x86)\Steam\steamapps\common\Slay the Spire 2\data_sts2_windows_x86_64</Sts2Data>
   </PropertyGroup>
-
-  <!-- The layout/ folder is a separate, game-independent project (pure algorithm + offline
-       tests). Keep it out of the mod build; we'll pull in just MapLayout.cs here when we wire it
-       into the minimap. -->
-  <ItemGroup>
-    <Compile Remove="layout/**/*.cs" />
-    <Compile Include="layout/MapLayout.cs" /> <!-- pure algorithm reused by the minimap -->
-  </ItemGroup>
 
   <ItemGroup>
     <!-- Game + engine + Harmony are provided by the running game; reference-only, never copied. -->

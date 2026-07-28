@@ -4,9 +4,9 @@ using Godot;
 using MegaCrit.Sts2.Core.ControllerInput;
 using MegaCrit.Sts2.Core.Logging;
 
-namespace FlatMap;
+namespace DeckView;
 
-/// <summary>Shared game-native visual metrics for FlatMap controls.</summary>
+/// <summary>Shared game-native visual metrics for DeckView controls.</summary>
 internal static class GameStyle
 {
     internal static readonly Color TextColor = new("FFF6E2");
@@ -23,8 +23,6 @@ internal static class GameStyle
     // would outlive freed Godot objects and throw on disposed wrappers during cleanup.
     static GameStyle() => ModRuntime.Disabled += HideAllToggles;
 
-    internal static void Register(ToggleSwitch toggle) => Toggles.Add(toggle);
-
     private static void HideAllToggles()
     {
         Toggles.RemoveAll(t => !GodotObject.IsInstanceValid(t));
@@ -39,7 +37,46 @@ internal static class GameStyle
         Font = GD.Load<Font>("res://themes/kreon_regular_shared.tres");
         Ticked = GD.Load<Texture2D>("res://images/atlases/ui_atlas.sprites/checkbox_ticked.tres");
         Unticked = GD.Load<Texture2D>("res://images/atlases/ui_atlas.sprites/checkbox_unticked.tres");
-        Log.Info($"[FlatMap] game style: font={Font != null}, ticked={Ticked != null}, unticked={Unticked != null}");
+        Log.Info($"[DeckView] game style: font={Font != null}, ticked={Ticked != null}, unticked={Unticked != null}");
+    }
+
+    internal static void Register(ToggleSwitch toggle) => Toggles.Add(toggle);
+
+    /// <summary>
+    /// Measure the live vanilla "View upgrades" control. All DeckView toggles then use the same
+    /// effective font and checkbox dimensions, including controls that were created earlier.
+    /// </summary>
+    internal static void ConfigureToggleMetrics(Control? checkboxVisuals, Control? label)
+    {
+        EnsureLoaded();
+
+        if (label != null && GodotObject.IsInstanceValid(label))
+        {
+            int themed = label.GetThemeFontSize("font_size");
+            float scale = Mathf.Abs(label.GetGlobalTransformWithCanvas().Scale.Y);
+            int effective = Mathf.RoundToInt(themed * Mathf.Clamp(scale, 0.2f, 2f));
+            if (effective > 0)
+                ToggleFontSize = effective;
+        }
+
+        if (checkboxVisuals != null && GodotObject.IsInstanceValid(checkboxVisuals))
+        {
+            Vector2 scale = checkboxVisuals.GetGlobalTransformWithCanvas().Scale;
+            Vector2 effective = new(
+                checkboxVisuals.Size.X * Mathf.Abs(scale.X),
+                checkboxVisuals.Size.Y * Mathf.Abs(scale.Y));
+            float measured = Mathf.Max(effective.X, effective.Y);
+            if (measured > 0f)
+                ToggleBoxSize = Mathf.Clamp(measured, 16f, 48f);
+        }
+        else
+        {
+            ToggleBoxSize = ToggleFontSize * 1.3f;
+        }
+
+        Toggles.RemoveAll(t => !GodotObject.IsInstanceValid(t));
+        foreach (ToggleSwitch toggle in Toggles)
+            toggle.RefreshMetrics();
     }
 }
 
@@ -169,3 +206,4 @@ internal sealed partial class ToggleSwitch : Control
                 new Color(1f, 0.88f, 0.45f, 0.95f), false, 2f);
     }
 }
+

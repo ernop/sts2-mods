@@ -41,16 +41,44 @@ views) and an **alternate map view**. Companion docs: `screen-system.md` (capsto
 - **[done]** Rendered as a **real capstone screen** (`ICapstoneScreen` via `NCapstoneContainer`),
   exactly like the deck-view screen — so it's a top-level page that naturally keeps the game's **top
   bar**, dim backstop, combat pause, and **native input/back/controller** routing.
-- **[done]** Layout is **left→right**: floors run along X (start at left, boss at right); the vertical
-  axis is the (compacted) lane. Whole act fits one screen.
+- **[done*]** Layout is **VERTICAL — the vanilla map's own orientation** (floors run bottom→top,
+  start at the bottom, boss at the top). This is the only orientation (the earlier left→right
+  layout was retired 2026-07-28). Nearly the only changes vs. vanilla are: (a) the act is
+  **compressed vertically so the whole map fits one screen** — every node visible, no scrolling —
+  and (b) our optional lane-compression system ("Compress") with its toggle. Lanes run across X,
+  centered; lane spacing is fixed to the raw span (Compress = narrower, never stretched).
 - **[done]** Reads live state only (`_mapPointDictionary`, `_runState`) — never mutates game data.
 
-### Node appearance
-- **[done]** Each node = a colored circle with the game's **real room icon** on top.
+### Node appearance (design directives of 2026-07-28 — the intended way we draw the map)
+- **[done*]** **Background = the act's own map colour** (`Act.MapBgColor`), so the game's icon art
+  sits on exactly the surface it was drawn for.
+- **[done*]** Each node = two layers: the icon's **main body** (the game's `_outline` texture — a
+  dilated solid mask of the icon shape) **redrawn in our scheme colour, slightly lightened**,
+  drawn BEHIND; the game's icon art on top with its **NATURAL interior colours** (never tint the
+  interior — that made campfires black). So the node's outline is the actual item shape carrying
+  the type colour, and the interior looks exactly like the official map. Icons drawn LARGE.
+- **[done*]** The original game's **size language**: elites draw larger (×1.35), boss largest
+  (×1.9), start enlarged (×1.3). Applied to drawing, hover hit-testing, and controller focus rects
+  alike (`TypeScale`/`RadiusOf`, keyed on the effective type so a revealed `?`-elite grows too).
+- **[done*]** The **proper boss icon** (never a letter/ball): every boss has unique icon art at
+  `ui/run_history/{bossid}.png` (+`_outline`), resolved via
+  `ImageHelper.GetRoomIconPath(Boss, Boss, EncounterModel.Id)` — the map's animated Spine boss has
+  no static png, so this is the right source. Second-boss floors use `SecondBossEncounter`;
+  fallbacks: `BossNodePath + ".png"` placeholder art, then glyph.
+- **[done*]** The **proper start icon** (`Act.Ancient.MapIcon` via the live node), sized up (×1.3).
 - **[done]** Colors: monster **red**, elite **purple**, shop **yellow**, camp/rest **green**,
-  treasure **orange**, unknown **grey**, start **teal**, boss **red** (real boss placeholder art;
-  Spine-art bosses fall back to "B").
+  treasure **orange**, unknown **grey**, start **teal**, boss **red**.
 - **[done]** Two-boss levels draw both bosses (both are in the point dictionary).
+- **[done*]** **Legend = the game's own Legend panel, used exactly**: the real `NMapScreen`
+  `_mapLegend` control is **borrowed** onto the flat page while it's open (vanilla anchor,
+  x = width × 0.8) and returned to the classic screen untouched on close/disable. **No state-cue
+  row**: the display itself must make states super obvious (blue glow + double ring + the game's
+  marker arrow on the current node).
+- **[done*]** **Connections use vanilla's dashed-footpath style** (`DrawDashedLine`), in the act's
+  own path palette (`MapTraveledColor` walked / `MapUntraveledColor` open, faded when dead),
+  trimmed to stop at each node's edge instead of running underneath.
+- **[done*]** **No "Floor N" label** and **no visited tally / "none visited yet"** — the
+  visualization carries that information itself.
 
 ### Node state clarity
 - **[done]** **Current position:** a bold **blue double-ring** AND the game's own **"you are here"
@@ -99,6 +127,15 @@ views) and an **alternate map view**. Companion docs: `screen-system.md` (capsto
   spot (reads as one control), never bleeding onto other screens (hidden when any capstone is up).
 - **[done]** **"Compress" toggle** on the flat page, **on by default**: off = raw layout 1:1 with the
   game's columns (proves compression changed nothing but spacing); on = compacted.
+- **[done*]** Exactly **two** checkboxes on the flat page — **"Flat map"** and **"Compress"** —
+  stacked bottom-left, **fully left-aligned (hard against the screen edge)** and **flush to the
+  bottom**, each exactly one line below the previous (measured heights, no blank lines). The
+  classic map's "Flat map" toggle shares the same hard-left x. (A third "Vertical" toggle existed
+  briefly on 2026-07-28; retired the same day when vertical became the only orientation.)
+- **[done*]** **The standard map controls always work**: the top-bar map button (next to the deck),
+  the map room, and the M key all toggle the map open/closed in either mode — clicking the top-bar
+  button while the flat page is up closes it (the `NMapScreen.Open` prefix treats an Open() while
+  our capstone is current as the toggle-off it was meant to be).
 - **[done]** **Flat and classic are two co-equal MODES of the one map, never layered** — the
   load-bearing design rule (night-mode/day-mode analogy). The map is a single slot with two
   renderings; exactly one is ever open. Opening renders it *according to the current mode*; the other

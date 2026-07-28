@@ -1,4 +1,4 @@
-# DeckView — development environment
+# FlatMap & DeckView — development environment
 
 Everything here is about *inspecting the game* and *building the mod*. It is
 deliberately explicit so nobody has to rediscover it. This repo runs from WSL
@@ -6,18 +6,18 @@ deliberately explicit so nobody has to rediscover it. This repo runs from WSL
 
 ## Compatibility policy: preflight, then enable all-or-nothing
 
-`Runtime/ModRuntime.cs` validates every private/string-named game member before
+`Runtime/ModRuntime.cs` (per mod) validates every private/string-named game member before
 Harmony applies a patch (`HookCatalog.FindMissing`). Missing members produce one
 explicit `DISABLED` log with the full list, and STS2 continues with its vanilla UI.
-If `PatchAll` fails partway, DeckView calls `UnpatchAll(HarmonyId)`; every callback
+If `PatchAll` fails partway, the mod calls `UnpatchAll(HarmonyId)`; every callback
 also checks `ModRuntime.Enabled`, so even an unsuccessful rollback cannot run a
 half-enabled feature. This preflight revert-with-warning runs in **all** builds.
 
-**Strict (dev) vs public — the failure mode differs, controlled by `DECKVIEW_PUBLIC`:**
+**Strict (dev) vs public — the failure mode differs, controlled by `PUBLIC_BUILD`:**
 - **Dev/local build (default):** an unexpected error in *our own* patch/input/draw
   code **re-throws (crashes loudly)** — we never mask our own bugs. This is the
   "work or crash" rule for us.
-- **Public release build (`-p:DeckViewPublic=true`, set by `scripts/package.ps1`;
+- **Public release build (`-p:PublicBuild=true`, set by `scripts/package.ps1`;
   `build.ps1 -Public`):** those same boundaries **revert to vanilla with a warning**
   instead of crashing a player's game (we can't control their STS2 version).
 - Functionally identical on a correct version + correct code; only the failure mode
@@ -70,8 +70,8 @@ Notes:
 - Building the mod itself requires the Windows game assemblies. From WSL, use the
   Windows SDK at `/mnt/c/Program Files/dotnet/dotnet.exe`. Public CI can use Linux
   .NET for the game-independent layout tests.
-- Normal build is the PowerShell script (runs the Windows dotnet + installs into
-  the game's `mods\deckview\`):
+- Normal build is the PowerShell script (runs the Windows dotnet + installs both mods into
+  the game's `mods\flatmap\` and `mods\deckview\`):
 
 ```powershell
 # from a Windows shell, repo root:
@@ -79,22 +79,36 @@ Notes:
 ```
 
   From WSL you can drive the same thing via:
-  `"/mnt/c/Program Files/dotnet/dotnet.exe" build deckview.csproj -c Release -o bin`
-  then copy `bin\deckview.dll` + `deckview.json` into
-  `…\Slay the Spire 2\mods\deckview\`.
+  `"/mnt/c/Program Files/dotnet/dotnet.exe" build flatmap.csproj -c Release -o bin`
+  then copy each mod's DLL + manifest into
+  `…\Slay the Spire 2\mods\<id>\`.
 - The csproj resolves the game DLL folder from `-p:Sts2Data=…`, the `STS2_DATA`
   env var, or the default install path (in that order).
-- After building: launch STS2 → Mods menu → enable DeckView → restart (Godot
+- After building: launch STS2 → Mods menu → enable the mod(s) → restart (Godot
   compiles mods on startup). Launch with `--nomods` for a vanilla A/B comparison.
 - Package an in-game-tested DLL with `.\scripts\package.ps1`; see `PUBLISHING.md`.
 
 ## Source organization
 
-- `DeckViewMod.cs` — card/map controllers, Harmony patch boundaries, and map rendering.
+The repo hosts **two fully independent mods** (separate DLLs, manifests, Harmony ids, configs,
+hook preflights — no shared assembly):
+
+**FlatMap (map), repo root:**
+- `FlatMapMod.cs` — map controller, Harmony patch boundaries, and map rendering.
 - `Runtime/ModRuntime.cs` — compatibility catalog, guarded Harmony lifecycle, reflection helpers.
-- `Config/DeckViewConfig.cs` — persisted user settings and debug opt-ins.
-- `UI/ToggleSwitch.cs` — measured game-native toggles and keyboard/controller activation.
+- `Config/FlatMapConfig.cs` — persisted user settings and debug opt-ins (`user://flatmap.cfg`;
+  first run migrates the flat preference from the legacy `user://deckview.cfg`).
+- `UI/ToggleSwitch.cs` — game-native toggles and keyboard/controller activation.
 - `layout/` — pure map layout algorithm and property-test executable.
+
+**DeckView (deck zoom), `deckview/`:**
+- `deckview/DeckViewMod.cs` — card shrink patches, hover reconcile, on-screen toggle.
+- `deckview/Runtime/ModRuntime.cs`, `deckview/Config/DeckViewConfig.cs`
+  (`user://deckview.cfg`, the historical location), `deckview/UI/`.
+
+The small runtime/toggle boilerplate is deliberately duplicated per mod ("completely separate"
+was the design goal); keep the copies textually close so diffs stay reviewable.
+`scripts/build.ps1` builds both (`-Only <id>` to limit); `scripts/package.ps1` archives both.
 
 Keep game-independent logic in `layout/`. If map rendering grows further, split model extraction
 and rendering into separate `Map/` files without moving reflection or patch lifecycle back into

@@ -2,25 +2,25 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Runtime.ExceptionServices;
-using Godot;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.ControllerInput;
 using MegaCrit.Sts2.Core.Logging;
-using MegaCrit.Sts2.Core.Map;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
+using MegaCrit.Sts2.Core.Nodes.Cards;
+using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
 using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
 using MegaCrit.Sts2.Core.Nodes.Screens;
-using MegaCrit.Sts2.Core.Nodes.Screens.Map;
 
-namespace FlatMap;
+namespace DeckView;
 
 /// <summary>
-/// Owns FlatMap's all-or-nothing Harmony lifecycle. A game update that moves a hook now leaves
-/// the unmodified game running and records every missing member in the log.
+/// Owns DeckView' all-or-nothing Harmony lifecycle. A game update that moves a hook leaves
+/// the unmodified game running and records every missing member in the log. Same policy as the
+/// deckview (map) mod, but a fully independent copy — the two mods share no assembly.
 /// </summary>
 internal static class ModRuntime
 {
-    internal const string HarmonyId = "ernes.flatmap";
+    internal const string HarmonyId = "ernes.deckview";
 
     private static Harmony? _harmony;
 
@@ -41,7 +41,7 @@ internal static class ModRuntime
         catch (Exception ex)
         {
 #if !PUBLIC_BUILD
-            throw new InvalidOperationException("[FlatMap] STRICT (dev) build: compatibility preflight threw — fix HookCatalog.", ex);
+            throw new InvalidOperationException("[DeckView] STRICT (dev) build: compatibility preflight threw — fix HookCatalog.", ex);
 #else
             LogDisabled($"compatibility preflight failed: {ex}");
             return false;
@@ -51,9 +51,9 @@ internal static class ModRuntime
         {
             string list = string.Join(", ", missing);
 #if !PUBLIC_BUILD
-            // Dev build: a missing hook is either a real game change or (as here) a wrong HookCatalog
-            // entry — either way we want it LOUD, not a silent revert that reads as "mod does nothing".
-            throw new InvalidOperationException($"[FlatMap] STRICT (dev) build: preflight found missing hooks: {list}");
+            // Dev build: a missing hook is either a real game change or a wrong HookCatalog entry —
+            // either way we want it LOUD, not a silent revert that reads as "mod does nothing".
+            throw new InvalidOperationException($"[DeckView] STRICT (dev) build: preflight found missing hooks: {list}");
 #else
             LogDisabled("incompatible game build; missing hooks: " + list);
             return false;
@@ -77,12 +77,12 @@ internal static class ModRuntime
             }
             catch (Exception rollback)
             {
-                Log.Info($"[FlatMap] ERROR: patch rollback failed; all patch callbacks remain " +
+                Log.Info($"[DeckView] ERROR: patch rollback failed; all patch callbacks remain " +
                          $"disabled by their runtime guards: {rollback}");
             }
 #if !PUBLIC_BUILD
             // Dev build: a PatchAll failure is our bug (bad patch attribute) — crash loudly.
-            throw new InvalidOperationException("[FlatMap] STRICT (dev) build: Harmony setup failed — fix before release.", ex);
+            throw new InvalidOperationException("[DeckView] STRICT (dev) build: Harmony setup failed — fix before release.", ex);
 #else
             LogDisabled($"Harmony setup failed: {ex}");
             return false;
@@ -111,7 +111,7 @@ internal static class ModRuntime
                 try { cleanup(); }
                 catch (Exception cleanupError)
                 {
-                    Log.Info($"[FlatMap] WARNING: disable cleanup failed: {cleanupError}");
+                    Log.Info($"[DeckView] WARNING: disable cleanup failed: {cleanupError}");
                 }
             }
         }
@@ -120,12 +120,12 @@ internal static class ModRuntime
     }
 
     private static void LogDisabled(string reason) =>
-        Log.Info($"[FlatMap] DISABLED — {reason}. The game will continue with its vanilla UI.");
+        Log.Info($"[DeckView] DISABLED — {reason}. The game will continue with its vanilla UI.");
 }
 
 /// <summary>
-/// Preflight catalog for every non-public or string-named game member FlatMap relies on.
-/// Keep this list synchronized with scripts/verify-hooks.sh.
+/// Preflight catalog for every non-public or string-named game member DeckView relies on.
+/// Keep this list synchronized with scripts/verify-hooks.sh (the "mini-cards" section).
 /// </summary>
 internal static class HookCatalog
 {
@@ -133,61 +133,28 @@ internal static class HookCatalog
     {
         var missing = new List<string>();
 
-        Method(typeof(NMapScreen), "_Process", missing);
-        Method(typeof(NMapScreen), "Open", missing);
-        Method(typeof(NMapScreen), "SetTravelEnabled", missing);
-        Method(typeof(NMapScreen), "RecalculateTravelability", missing, Type.EmptyTypes);
-        Property(typeof(NMapScreen), "IsTravelEnabled", missing);
-        Field(typeof(NMapScreen), "_mapPointDictionary", missing);
-        FieldInfo? runStateField = Field(typeof(NMapScreen), "_runState", missing);
-        Field(typeof(NMapScreen), "_marker", missing);
-        Field(typeof(NMapScreen), "_mapLegend", missing);
+        Method(typeof(NCardGrid), "ConnectSignals", missing);
+        Method(typeof(NCardGrid), "_ExitTree", missing);
+        Method(typeof(NCardGrid), "_Process", missing);
+        Property(typeof(NCardGrid), "CardPadding", missing);
+        Property(typeof(NCardGrid), "CurrentlyDisplayedCardHolders", missing);
+        Field(typeof(NCardGrid), "_cardSize", missing);
+        Field(typeof(NCardGrid), "_needsReinit", missing);
 
-        Field(typeof(NNormalMapPoint), "_icon", missing);
-        Field(typeof(NNormalMapPoint), "_outline", missing);
-        Field(typeof(NAncientMapPoint), "_icon", missing);
-        Field(typeof(NAncientMapPoint), "_outline", missing);
-        Field(typeof(NBossMapPoint), "_placeholderImage", missing);
-        Property(typeof(NMapPoint), "Point", missing);
-        Property(typeof(NMapPoint), "State", missing);
-        Field(typeof(MapPoint), "coord", missing);
-        Property(typeof(MapPoint), "PointType", missing);
-        Property(typeof(MapPoint), "Children", missing);
+        Property(typeof(NCardHolder), "SmallScale", missing);
+        Property(typeof(NCardHolder), "Hitbox", missing);
+        Method(typeof(NCardHolder), "RefreshFocusState", missing);
+        Field(typeof(NCardHolder), "_isHovered", missing);
+        Field(typeof(NCardHolder), "_isFocused", missing);
+        Field(typeof(NCardHolder), "_hoverTween", missing);
+        Method(typeof(NGridCardHolder), "Create", missing);
+        if (AccessTools.DeclaredPropertyGetter(typeof(NGridCardHolder), "SmallScale") != null)
+            missing.Add("NGridCardHolder must inherit SmallScale without overriding it");
+        Field(typeof(NClickableControl), "_isHovered", missing);
 
-        if (runStateField != null)
-        {
-            Type runState = runStateField.FieldType;
-            Property(runState, "CurrentMapCoord", missing);
-            Property(runState, "CurrentActIndex", missing);
-            Property(runState, "ActFloor", missing);
-            PropertyInfo? act = Property(runState, "Act", missing);
-            Property(runState, "MapPointHistory", missing);
-            PropertyInfo? runMap = Property(runState, "Map", missing);
-            if (runMap != null)
-                Property(runMap.PropertyType, "SecondBossMapPoint", missing);
-            if (act != null)
-            {
-                PropertyInfo? title = Property(act.PropertyType, "Title", missing);
-                if (title != null)
-                    Method(title.PropertyType, "GetFormattedText", missing, Type.EmptyTypes);
-                Property(act.PropertyType, "MapBgColor", missing);
-                Property(act.PropertyType, "MapTraveledColor", missing);
-                Property(act.PropertyType, "MapUntraveledColor", missing);
-                PropertyInfo? bossEnc = Property(act.PropertyType, "BossEncounter", missing);
-                Property(act.PropertyType, "SecondBossEncounter", missing);
-                if (bossEnc != null)
-                    Property(bossEnc.PropertyType, "BossNodePath", missing);
-            }
-        }
+        Method(typeof(NCardsViewScreen), "ConnectSignals", missing);
+        Field(typeof(NCardsViewScreen), "_showUpgrades", missing);
 
-        // The method's first parameter is the base InputEvent (our patch reads __args[0] and casts to
-        // InputEventKey). So require the first param to be a type that an InputEventKey fits into
-        // (InputEvent or InputEventKey) — NOT that it's exactly InputEventKey (it isn't).
-        MethodInfo? shortcut = Method(typeof(NInputManager), "ProcessShortcutKeyInput", missing);
-        if (shortcut != null &&
-            (shortcut.GetParameters().Length == 0 ||
-             !shortcut.GetParameters()[0].ParameterType.IsAssignableFrom(typeof(InputEventKey))))
-            missing.Add("NInputManager.ProcessShortcutKeyInput(first arg must accept an InputEventKey)");
         Property(typeof(NControllerManager), "IsUsingController", missing);
 
         return missing;
@@ -213,7 +180,6 @@ internal static class HookCatalog
         if (value == null) missing.Add($"{type.Name}.{name}");
         return value;
     }
-
 }
 
 // Reflection calls remain fail-fast internally, but ModRuntime preflights all static lookups before
@@ -225,13 +191,6 @@ internal static class Reflect
 
     internal static MethodInfo Method(Type type, string name) =>
         AccessTools.Method(type, name) ?? throw new MissingMethodException(type.FullName, name);
-
-    internal static MethodInfo Method(Type type, string name, Type[] parameters) =>
-        AccessTools.Method(type, name, parameters) ?? throw new MissingMethodException(type.FullName, name);
-
-    internal static MethodInfo PropertyGetter(Type type, string name) =>
-        AccessTools.PropertyGetter(type, name)
-        ?? throw new MissingMethodException(type.FullName, $"get_{name}");
 }
 
 internal static class Dbg
@@ -240,7 +199,7 @@ internal static class Dbg
 
     internal static void Once(string key, string message)
     {
-        if (Seen.Add(key)) Log.Info($"[FlatMap] {message}");
+        if (Seen.Add(key)) Log.Info($"[DeckView] {message}");
     }
 
     internal static void Rearm() => Seen.Clear();

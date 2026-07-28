@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace DeckView.Layout;
+namespace FlatMap.Layout;
 
 // PURE, game-independent map-layout core. No Godot, no sts2 — just graph -> lane-per-node.
 // This is where the "flatten the minimap" logic lives so it can be exhaustively unit-tested
@@ -205,8 +205,9 @@ public static class MapLayout
             // connected set of nodes all currently sharing a lane; shifting it keeps it flat.
             var candidates = new List<int[]>();
             candidates.AddRange(SameLaneRuns(g, lane).Where(s => s.Length >= 2)
-                                                     .OrderByDescending(s => s.Length));
-            candidates.AddRange(g.Nodes.Select(n => new[] { n.Id }));
+                .OrderByDescending(s => s.Length)
+                .ThenBy(s => g.Nodes[s[0]].Row).ThenBy(s => g.Nodes[s[0]].Col));
+            candidates.AddRange(g.Nodes.OrderBy(n => n.Row).ThenBy(n => n.Col).Select(n => new[] { n.Id }));
 
             foreach (int[] set in candidates)
             {
@@ -275,7 +276,15 @@ public static class MapLayout
             if (!groups.TryGetValue(r, out List<int>? list)) groups[r] = list = new List<int>();
             list.Add(i);
         }
-        return groups.Values.Select(l => l.ToArray()).ToList();
+        // Canonical order (each run keyed by its smallest (Row,Col) member; members likewise sorted)
+        // so the greedy hill-climb explores identically regardless of node Id/enumeration order. The
+        // layout MUST be a pure function of the graph, not of how its nodes happened to be listed —
+        // otherwise the game (point-dictionary order) and the offline harness diverge. Proven by the
+        // order-dependence sweep in layout/Program.cs.
+        return groups.Values
+            .Select(l => l.OrderBy(id => g.Nodes[id].Row).ThenBy(id => g.Nodes[id].Col).ToArray())
+            .OrderBy(a => g.Nodes[a[0]].Row).ThenBy(a => g.Nodes[a[0]].Col)
+            .ToList();
     }
 
     // Would shifting every node in `set` by `delta` keep the layout legal? (No overlap and no

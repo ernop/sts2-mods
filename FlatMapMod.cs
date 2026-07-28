@@ -2,67 +2,36 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
-using DeckView.Layout;
+using FlatMap.Layout;
 using Godot;
 using HarmonyLib;
+using MegaCrit.Sts2.Core.Assets;
 using MegaCrit.Sts2.Core.ControllerInput;
 using MegaCrit.Sts2.Core.Debug;
 using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Modding;
-using MegaCrit.Sts2.Core.Nodes.Cards;
-using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
-using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
+using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Map;
-using MegaCrit.Sts2.Core.Nodes.HoverTips;
+using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
+using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Nodes.Screens;
 using MegaCrit.Sts2.Core.Nodes.Screens.Capstones;
-using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
 using MegaCrit.Sts2.Core.Nodes.Screens.Map;
 using MegaCrit.Sts2.Core.Nodes.Screens.ScreenContext;
-using MegaCrit.Sts2.Core.Nodes.Screens.Timeline.UnlockScreens;
 
-namespace DeckView;
+namespace FlatMap;
 
-// DeckView — Slay the Spire 2 port of the STS1 "make deck-view cards smaller" mod.
+// FlatMap — the flat whole-act map view for Slay the Spire 2.
 //
-// STS2's card grid (NCardGrid) is already responsive: the column count and scroll
-// bounds are computed from the per-card layout size and padding. So we only have to
-// make the cards smaller and everything reflows to fit more per screen.
-//
-// Two coordinated levers, kept proportional so layout and rendering stay in sync:
-//   1. NCardGrid._cardSize  — the layout cell size (drives Columns, positions, scroll).
-//   2. NCardHolder.SmallScale — the *rendered* scale of each grid card.
-//
-// Both are the vanilla 0.8 baseline (NCard.defaultSize * smallScale / SmallScale).
-// We multiply both by the same factor. Merchant and card-bundle screens read the
-// static `smallScale` field directly (not the SmallScale property), so they are
-// untouched — the shrink is naturally scoped to card-grid views.
-//
-// A grid card enlarges to HoverScale (1.0) only while the mouse is *actually* over its
-// (small) on-screen rect. See GridHoverGate for why: without that, a card can open
-// "stuck big" from a stale mouse-over the game never cleared.
+// (The original "make deck-view cards smaller" feature was extracted into its own standalone
+// DeckView mod — see deckview/ — so this mod carries ONLY the map view. The two mods are
+// fully independent: separate DLLs, manifests, Harmony ids, configs, and hook preflights.)
 [ModInitializer(nameof(Init))]
-public static class DeckViewMod
+public static class FlatMapMod
 {
-    // 0.6 => cards render at 60% of the vanilla deck-view size, matching the STS1 mod.
-    // Lower = smaller cards / more columns. Tune to taste. (Only applied in mini mode —
-    // see DeckModeController; toggle with the hotkey below, state persists across runs.)
-    public const float CardScaleFactor = 0.6f;
-
-    // Vanilla NCardGrid.CardPadding is a constant 40f. Tighter spacing packs in more
-    // columns/rows. Set equal to 40f to keep vanilla spacing.
-    public const float CardPadding = 24f;
-
-    // Hotkey to toggle mini <-> large card mode. Checked while a card grid is on screen
-    // (deck view, library, card-select), so open the deck and press it to flip live.
-    // NOTE: this is a plain key (no modifier) because the key is *read*, not consumed —
-    // if it happens to also be bound to something on that screen, both would fire. T isn't
-    // a known deck-screen binding; change here if it clashes.
-    public const Key ToggleDeckModeKey = Key.T;
-
     // O flips the map STYLE (flat <-> classic) in place — it is NOT global; it only does anything
     // while a map is already displayed. O = "overview". Change to taste.
     public const Key ToggleMiniMapKey = Key.O;
@@ -72,438 +41,21 @@ public static class DeckViewMod
     // are configured to. M = "map".
     public const Key MapKey = Key.M;
 
-    // DeckView was built and tested against this game version. On another build, every private
-    // hook is preflighted before Harmony changes anything. Missing hooks disable DeckView and
+    // FlatMap was built and tested against this game version. On another build, every private
+    // hook is preflighted before Harmony changes anything. Missing hooks disable FlatMap and
     // leave the game's UI untouched instead of crashing or leaving a partially patched mod.
     public const string TestedGameVersion = "v0.109.0";
 
     public static void Init()
     {
-        if (!ModRuntime.TryEnable(typeof(DeckViewMod).Assembly))
+        if (!ModRuntime.TryEnable(typeof(FlatMapMod).Assembly))
             return;
 
         string? gameVersion = ReleaseInfoManager.Instance.ReleaseInfo?.Version;
         string versionNote = gameVersion == TestedGameVersion
             ? ""
             : $" — NOTE: game '{gameVersion ?? "unknown"}' is not the tested {TestedGameVersion}; re-verify";
-        Log.Info($"[DeckView] loaded — card scale x{CardScaleFactor}, padding {CardPadding}px{versionNote}");
-    }
-}
-
-// --- Mini/large toggle: persistent state + hotkey + clean live swap -------------------
-//
-// The shrink is no longer unconditional: every shrink patch is gated on
-// DeckModeController.MiniEnabled, whose value is loaded from (and saved to) a small config
-// file so it survives across runs. Default is mini (matches the mod's original behavior).
-//
-// Toggling has to be a *complete* swap, not a half-state: the layout cell size (_cardSize)
-// determines Columns / positions / scroll and is only computed in ConnectSignals, which
-// runs once. So on toggle we set each live grid's _cardSize from the vanilla base we
-// recorded (times the mode factor) and flag it for reinit — the grid then rebuilds itself
-// (InitGrid) next frame with the new size, padding, and rendered scale all in agreement.
-internal static class DeckModeController
-{
-    private static readonly FieldInfo CardSizeField = Reflect.Field(typeof(NCardGrid), "_cardSize");
-    private static readonly FieldInfo NeedsReinitField = Reflect.Field(typeof(NCardGrid), "_needsReinit");
-
-    // Live grids -> the vanilla (un-shrunk) _cardSize captured at ConnectSignals time.
-    private static readonly Dictionary<NCardGrid, Vector2> _grids = new();
-
-    private static bool _keyWasDown;
-
-    static DeckModeController() => ModRuntime.Disabled += RestoreVanilla;
-
-    internal static bool MiniEnabled => DeckViewConfig.MiniDeck;
-
-    internal static void Register(NCardGrid grid, Vector2 vanillaCardSize) => _grids[grid] = vanillaCardSize;
-
-    internal static void Unregister(NCardGrid grid) => _grids.Remove(grid);
-
-    // Edge-detected hotkey poll (called each frame a card grid processes).
-    internal static void PollHotkey()
-    {
-        bool down = Input.IsKeyPressed(DeckViewMod.ToggleDeckModeKey);
-        if (down && !_keyWasDown)
-            Toggle();
-        _keyWasDown = down;
-    }
-
-    internal static void Toggle() => SetMini(!DeckViewConfig.MiniDeck);
-
-    // Set mini mode to an explicit value and rebuild every live grid to match. Used by both the
-    // hotkey (Toggle) and the on-screen "View mini-cards" tickbox, so they stay in agreement.
-    internal static void SetMini(bool on)
-    {
-        if (DeckViewConfig.MiniDeck == on)
-            return; // already there — nothing to rebuild
-        DeckViewConfig.MiniDeck = on;
-        MiniCardsToggle_Patch.SyncAll(on); // keep the on-screen checkbox(es) in agreement with the hotkey
-        float factor = MiniEnabled ? DeckViewMod.CardScaleFactor : 1f;
-        Log.Info($"[DeckView] {(MiniEnabled ? "mini" : "large")} deck mode");
-
-        foreach (KeyValuePair<NCardGrid, Vector2> kv in _grids.ToArray())
-        {
-            NCardGrid grid = kv.Key;
-            if (!GodotObject.IsInstanceValid(grid))
-            {
-                _grids.Remove(grid);
-                continue;
-            }
-            // Resize the layout cell from the recorded vanilla base, then let the grid rebuild
-            // itself so columns/positions/scroll and the rendered card scale all flip together.
-            CardSizeField.SetValue(grid, kv.Value * factor);
-            NeedsReinitField.SetValue(grid, true);
-        }
-    }
-
-    private static void RestoreVanilla()
-    {
-        foreach (KeyValuePair<NCardGrid, Vector2> kv in _grids.ToArray())
-        {
-            if (!GodotObject.IsInstanceValid(kv.Key)) continue;
-            CardSizeField.SetValue(kv.Key, kv.Value);
-            NeedsReinitField.SetValue(kv.Key, true);
-        }
-        _grids.Clear();
-    }
-}
-
-// Shrink the layout cell size right after the grid computes it in ConnectSignals
-// (vanilla: _cardSize = NCard.defaultSize * NCardHolder.smallScale). Because Columns,
-// row count, positions and scroll limits all derive from _cardSize + CardPadding, the
-// grid reflows to more columns automatically.
-[HarmonyPatch(typeof(NCardGrid), "ConnectSignals")]
-internal static class NCardGrid_ConnectSignals_Patch
-{
-    // Harmony injects the private field `_cardSize` as the parameter `____cardSize`
-    // (three-underscore prefix + the field name, which itself starts with '_'). At postfix
-    // entry it holds the vanilla base size; we record that (so a later live toggle can
-    // recompute from it without re-running ConnectSignals) and shrink only in mini mode.
-    private static void Postfix(NCardGrid __instance, ref Vector2 ____cardSize)
-    {
-        if (!ModRuntime.Enabled) return;
-        Vector2 vanilla = ____cardSize;
-        try
-        {
-            DeckModeController.Register(__instance, vanilla);
-            Dbg.Rearm();
-            if (DeckModeController.MiniEnabled)
-                ____cardSize *= DeckViewMod.CardScaleFactor;
-            Log.Info($"[DeckView] grid connected: vanilla cardSize={vanilla}, mini={DeckModeController.MiniEnabled}, " +
-                     $"final cardSize={____cardSize}");
-        }
-        catch (Exception ex)
-        {
-            ____cardSize = vanilla;
-            ModRuntime.Disable(nameof(NCardGrid_ConnectSignals_Patch), ex);
-        }
-    }
-}
-
-// Drop a grid from the toggle registry when it leaves the tree.
-[HarmonyPatch(typeof(NCardGrid), "_ExitTree")]
-internal static class NCardGrid_ExitTree_Patch
-{
-    private static void Postfix(NCardGrid __instance)
-    {
-        if (!ModRuntime.Enabled) return;
-        try { DeckModeController.Unregister(__instance); }
-        catch (Exception ex) { ModRuntime.Disable(nameof(NCardGrid_ExitTree_Patch), ex); }
-    }
-}
-
-// Shrink the *rendered* scale of grid cards to match the smaller layout cells.
-// Grid holders set their Scale from the SmallScale property (NCardGrid line ~799 and
-// NGridCardHolder line ~104), and the hover-out tween returns to SmallScale, so this
-// keeps rendering consistent — hover still pops to HoverScale (1.0) for readability.
-//
-// Guarded to NGridCardHolder so the shrink is limited to deck-grid cards. This leaves
-// the combat hand (NHandCardHolder — uses its own _targetScale), the inspect popup
-// (NPreviewCardHolder — overrides SmallScale, so this patch never runs for it), and
-// selected-from-hand cards (NSelectedHandCardHolder) at their normal size — matching
-// the STS1 mod's "leave hand/popups/normal rendering alone" scope.
-[HarmonyPatch(typeof(NCardHolder), "SmallScale", MethodType.Getter)]
-internal static class NCardHolder_SmallScale_Patch
-{
-    private static void Postfix(NCardHolder __instance, ref Vector2 __result)
-    {
-        if (!ModRuntime.Enabled) return;
-        Vector2 vanilla = __result;
-        try
-        {
-            if (DeckModeController.MiniEnabled && __instance is NGridCardHolder && !GridHoverGate.IsInFixedCardRow(__instance))
-            {
-                __result *= DeckViewMod.CardScaleFactor;
-                Dbg.Once("smallscale", $"SmallScale shrink active (x{DeckViewMod.CardScaleFactor}) -> {__result}");
-            }
-        }
-        catch (Exception ex)
-        {
-            __result = vanilla;
-            ModRuntime.Disable(nameof(NCardHolder_SmallScale_Patch), ex);
-        }
-    }
-}
-
-// Tighten the spacing between cards (vanilla getter returns a constant 40f).
-[HarmonyPatch(typeof(NCardGrid), "CardPadding", MethodType.Getter)]
-internal static class NCardGrid_CardPadding_Patch
-{
-    private static void Postfix(ref float __result)
-    {
-        if (!ModRuntime.Enabled) return;
-        float vanilla = __result;
-        try
-        {
-            if (DeckModeController.MiniEnabled)
-                __result = DeckViewMod.CardPadding;
-        }
-        catch (Exception ex)
-        {
-            __result = vanilla;
-            ModRuntime.Disable(nameof(NCardGrid_CardPadding_Patch), ex);
-        }
-    }
-}
-
-// --- Visible "Mini-cards" toggle in the deck-view control cluster -------------------------
-//
-// A discoverable on-screen counterpart to the T hotkey, wired to DeckModeController.
-//
-// We build our OWN control (a self-drawn ToggleSwitch) rather than cloning the game's
-// "View upgrades" NTickbox. Cloning that tickbox does NOT work: it's inlined in the deck-view
-// scene and its visuals are addressed by scene-unique names ("%TickboxVisuals") OWNED BY THE
-// SCREEN, so a duplicated-and-reparented copy can't resolve them — its ConnectSignals throws
-// NullReferenceException, which (as a postfix of NCardsViewScreen.ConnectSignals) aborts the
-// whole deck-screen build and makes every card disappear. ToggleSwitch has no such scene
-// coupling. Placement and sizing are measured from the live "View upgrades" control.
-[HarmonyPatch(typeof(NCardsViewScreen), "ConnectSignals")]
-internal static class MiniCardsToggle_Patch
-{
-    private static readonly FieldInfo ShowUpgradesField = Reflect.Field(typeof(NCardsViewScreen), "_showUpgrades");
-    private const string AddedMeta = "deckview_minicards_toggle";
-
-    // Live switches, so the T hotkey and the on-screen toggle always agree (SyncAll below).
-    private static readonly List<ToggleSwitch> _toggles = new();
-
-    private static void Postfix(NCardsViewScreen __instance)
-    {
-        if (!ModRuntime.Enabled) return;
-        try
-        {
-            if (__instance.HasMeta(AddedMeta))
-                return;
-            __instance.SetMeta(AddedMeta, true);
-
-            var upgrades = ShowUpgradesField.GetValue(__instance) as Control;
-            Control? label = __instance.GetNodeOrNull("%ViewUpgradesLabel") as Control;
-            Control? visuals = __instance.GetNodeOrNull("%TickboxVisuals") as Control;
-            GameStyle.ConfigureToggleMetrics(visuals, label);
-
-            var toggle = new ToggleSwitch("Mini-cards", DeckModeController.MiniEnabled, OnMiniToggled)
-            {
-                Name = "DeckViewMiniCardsToggle",
-                ZIndex = 50,
-            };
-            __instance.AddChild(toggle);
-            if (upgrades != null && GodotObject.IsInstanceValid(upgrades))
-            {
-                toggle.GlobalPosition = upgrades.GlobalPosition - new Vector2(0f, toggle.Size.Y + 8f);
-                NodePath previousTop = upgrades.FocusNeighborTop;
-                toggle.FocusNeighborBottom = toggle.GetPathTo(upgrades);
-                upgrades.FocusNeighborTop = upgrades.GetPathTo(toggle);
-                ModRuntime.Disabled += () =>
-                {
-                    if (GodotObject.IsInstanceValid(upgrades))
-                        upgrades.FocusNeighborTop = previousTop;
-                };
-            }
-            _toggles.Add(toggle);
-            Log.Info($"[DeckView] mini-cards toggle at {toggle.GlobalPosition} size={toggle.Size} " +
-                     $"font={GameStyle.ToggleFontSize}px box={GameStyle.ToggleBoxSize:0.#}px");
-        }
-        catch (Exception ex)
-        {
-            ModRuntime.Disable(nameof(MiniCardsToggle_Patch), ex);
-        }
-    }
-
-    // Reflect the current mode onto every live switch WITHOUT re-firing the callback (so a T-key
-    // flip updates the on-screen toggle, and vice-versa, with no feedback loop). Called by SetMini.
-    internal static void SyncAll(bool on)
-    {
-        _toggles.RemoveAll(t => !GodotObject.IsInstanceValid(t));
-        foreach (ToggleSwitch t in _toggles)
-            t.SetOn(on);
-    }
-
-    private static void OnMiniToggled(bool pressed) => DeckModeController.SetMini(pressed);
-}
-
-// --- Hover reconcile: a grid card is "big" only while the mouse is really over it ------
-//
-// Symptom this fixes: open the deck view (press "d") and one card sometimes shows at full
-// size while every other card is correctly shrunk. It's NOT under the mouse — it's the
-// card that would have been under the cursor at *vanilla* card size — and it stays big
-// until you mouse over it and off again.
-//
-// Root cause: while the grid lays out / animates in, a card's hitbox briefly passes under
-// the (stationary) mouse, so Godot fires MouseEntered and the card pops to HoverScale.
-// The card then settles into its small position away from the cursor, but Godot does NOT
-// fire MouseExited for a control that moves out from under a stationary mouse — so the
-// hitbox's _isHovered stays true and nothing shrinks the card back. Trusting _isHovered
-// can't fix this; it IS the stale value.
-//
-// Fix: every frame the grid processes, reconcile against ground truth. For each displayed
-// holder that's currently enlarged (_isFocused), if the mouse isn't actually inside the
-// holder's real (scaled) on-screen rect, force it back to un-hovered SmallScale. A genuine
-// mouse-over keeps the card big (the game's own MouseEntered path still enlarges it); when
-// you move off, the game's normal MouseExited shrink runs (a smooth tween, left untouched
-// because _isFocused is already false by then). Only the stuck/stale case is corrected.
-//
-// This also covers the deck view grab-focusing a default card on open (enlarge with no
-// mouse on it): that card is _isFocused with the mouse elsewhere, so it's reconciled small
-// within a frame. Skipped while a controller is in use, so controller focus still enlarges.
-internal static class GridHoverGate
-{
-    // NClickableControl's *mouse* hover flag (set by MouseEntered/Exited). We clear the
-    // stale value when correcting a card; we do NOT read it to decide (that's the bug).
-    private static readonly FieldInfo HitboxMouseHovered =
-        Reflect.Field(typeof(NClickableControl), "_isHovered");
-
-    // The holder's own hover/focus bookkeeping (base NCardHolder).
-    private static readonly FieldInfo HolderIsHovered = Reflect.Field(typeof(NCardHolder), "_isHovered");
-    internal static readonly FieldInfo HolderIsFocused = Reflect.Field(typeof(NCardHolder), "_isFocused");
-    private static readonly FieldInfo HolderHoverTween = Reflect.Field(typeof(NCardHolder), "_hoverTween");
-
-    // The game's own un-hover entry point. RefreshFocusState() re-reads CanBeFocused (== the
-    // holder's _isHovered) and, when it changed, flips _isFocused and calls DoCardHoverEffects,
-    // which on false: kills the hover tween, starts the normal shrink tween, AND calls
-    // ClearHoverTips() -> NHoverTipSet.Remove(this). Driving this is how we dismiss a card's
-    // popup EXACTLY the way vanilla does (both keyword tips and related-card previews live in
-    // the one NHoverTipSet keyed by the holder).
-    private static readonly MethodInfo RefreshFocusStateMethod =
-        Reflect.Method(typeof(NCardHolder), "RefreshFocusState");
-
-    // Controller in use? The reconcile is skipped then, so controller focus still enlarges.
-    // The Instance null-check is legitimate state (not error hiding): no controller manager
-    // yet => treat as not using a controller. Any other failure propagates.
-    internal static bool UsingController() => NControllerManager.Instance?.IsUsingController ?? false;
-
-    // Is the mouse genuinely inside this hitbox's current on-screen rect? Uses the full
-    // canvas transform (which includes the holder's scale), so it's correct whether the
-    // card is drawn small or popped to full size — unlike the stale _isHovered flag.
-    internal static bool MouseActuallyInside(NClickableControl? hitbox)
-    {
-        if (hitbox == null || !hitbox.IsInsideTree() || !hitbox.IsVisibleInTree())
-            return false;
-        Viewport? vp = hitbox.GetViewport();
-        if (vp == null)
-            return false;
-        Vector2 local = hitbox.GetGlobalTransformWithCanvas().AffineInverse() * vp.GetMousePosition();
-        return new Rect2(Vector2.Zero, hitbox.Size).HasPoint(local);
-    }
-
-    // Drive a stuck-enlarged holder back to the clean, un-hovered small state — using the
-    // game's OWN un-hover path so the shrink and, crucially, the popup dismissal are identical
-    // to what happens when you normally move the mouse off a card. (The previous version
-    // hand-rolled the shrink and called NHoverTipSet.Remove directly; that bypassed the game's
-    // ClearHoverTips path and could leave the keyword tip / related-card preview floating.)
-    internal static void ForceUnhover(NCardHolder holder)
-    {
-        // Clear the stale ground-truth mouse bit on the hitbox (the ROOT of the stuck-hover
-        // bug: Godot never fired MouseExited, so this stayed true). Must clear it or (a) the
-        // holder can't be focused again on a real future hover, and (b) RefreshFocusState below
-        // wouldn't see "not hovered".
-        if (holder.Hitbox is NClickableControl hitbox)
-            HitboxMouseHovered.SetValue(hitbox, false);
-        HolderIsHovered.SetValue(holder, false);
-
-        // Now run the game's real un-hover: RefreshFocusState() sees _isHovered==false, flips
-        // _isFocused to false, and calls DoCardHoverEffects(false) -> normal shrink tween +
-        // ClearHoverTips() -> NHoverTipSet.Remove(this). This frees the whole tip set (keyword
-        // tips AND related-card previews) exactly as vanilla does. The reconcile only calls us
-        // for holders that are currently _isFocused, so this always drives the full dismissal.
-        RefreshFocusStateMethod.Invoke(holder, null);
-
-        // Safety net for any path where the holder was already un-focused but a tip set is
-        // still registered under it (RefreshFocusState would short-circuit). Idempotent.
-        NHoverTipSet.Remove(holder);
-    }
-
-    // Lightweight flag scrub for pooled reuse (NGridCardHolder.Create). The holder may not be
-    // in the tree yet, so we must NOT start a tween or drive DoCardHoverEffects — just clear
-    // any stale hover/focus bits and drop a stray tip so a recycled card starts clean.
-    internal static void ScrubHoverFlags(NCardHolder holder)
-    {
-        if (holder.Hitbox is NClickableControl hitbox)
-            HitboxMouseHovered.SetValue(hitbox, false);
-        HolderIsHovered.SetValue(holder, false);
-        HolderIsFocused.SetValue(holder, false);
-        if (HolderHoverTween.GetValue(holder) is Tween tween && GodotObject.IsInstanceValid(tween))
-            tween.Kill();
-        NHoverTipSet.Remove(holder);
-    }
-
-    // A few screens reuse NGridCardHolder but lay a handful of cards out in a fixed-spacing
-    // row instead of a scrollable NCardGrid: the choose-a-card screen, the post-combat card
-    // reward, and the unlock screen. Those aren't NCardGrid (so the reconcile never touches
-    // them) and we also leave them full size here.
-    internal static bool IsInFixedCardRow(Node node)
-    {
-        for (Node? p = node; p != null; p = p.GetParent())
-        {
-            if (p is NChooseACardSelectionScreen or NCardRewardSelectionScreen or NUnlockCardsScreen)
-                return true;
-        }
-        return false;
-    }
-}
-
-// Every frame the grid processes, snap any "big" card the mouse isn't really over back to
-// small. Cheap: only cards that are currently enlarged (usually 0–1) get the hit test.
-[HarmonyPatch(typeof(NCardGrid), "_Process")]
-internal static class NCardGrid_Process_Reconcile_Patch
-{
-    private static void Postfix(NCardGrid __instance)
-    {
-        if (!ModRuntime.Enabled) return;
-        try
-        {
-            DeckModeController.PollHotkey();
-            if (!DeckModeController.MiniEnabled || GridHoverGate.UsingController())
-                return;
-            foreach (NGridCardHolder holder in __instance.CurrentlyDisplayedCardHolders)
-            {
-                if (holder == null)
-                    continue;
-                if (GridHoverGate.HolderIsFocused.GetValue(holder) is not true)
-                    continue;
-                if (GridHoverGate.MouseActuallyInside(holder.Hitbox))
-                    continue;
-                Dbg.Once("reconcile", "hover reconcile fired: forcing a stuck-big card back to small " +
-                                       "+ dismissing its popup via the game's own un-hover path");
-                GridHoverGate.ForceUnhover(holder);
-            }
-        }
-        catch (Exception ex)
-        {
-            ModRuntime.Disable(nameof(NCardGrid_Process_Reconcile_Patch), ex);
-        }
-    }
-}
-
-// Grid holders come from a pool; Create()/OnReturnedFromPool reset Scale but not the
-// _isHovered/_isFocused flags. Scrub them on reuse so a recycled "hovered" card starts
-// clean (avoids even a one-frame stale enlarge before the reconcile runs).
-[HarmonyPatch(typeof(NGridCardHolder), "Create")]
-internal static class Create_Reset_Patch
-{
-    private static void Postfix(NGridCardHolder __result)
-    {
-        if (!ModRuntime.Enabled || __result == null) return;
-        try { GridHoverGate.ScrubHoverFlags(__result); }
-        catch (Exception ex) { ModRuntime.Disable(nameof(Create_Reset_Patch), ex); }
+        Log.Info($"[FlatMap] loaded — flat map view{versionNote}");
     }
 }
 
@@ -538,6 +90,10 @@ internal static class MiniMapController
     // character's MapMarker art. We read that live texture so our page marks the current node the
     // exact way the real map does. (Null in multiplayer, where the game suppresses the marker.)
     private static readonly FieldInfo MarkerField = Reflect.Field(typeof(NMapScreen), "_marker");
+    // The game's own "Legend" panel (parchment, header, localized icon+label rows). We BORROW the
+    // real control onto the flat page while it's open — pixel-identical to vanilla — and return it
+    // to the classic map screen on close. Vanilla anchors it at x = Size.X * 0.8.
+    private static readonly FieldInfo MapLegendField = Reflect.Field(typeof(NMapScreen), "_mapLegend");
     // CurrentMapCoord (MapCoord?) tells us where the player is now (null before the first move).
     private static readonly MethodInfo CurrentCoordGetter =
         Reflect.PropertyGetter(RunStateField.FieldType, "CurrentMapCoord");
@@ -580,25 +136,95 @@ internal static class MiniMapController
         };
     }
 
-    // Each on-screen point renders its room icon into a TextureRect field named "_icon". We grab
-    // that live texture so the minimap shows the EXACT same icon art the real map does (including
-    // "?" nodes that have resolved to a real room). Boss points are a different class with no
-    // _icon (Spine/placeholder art) — those fall back to the "B" letter glyph.
+    // Each on-screen point renders its room icon into a TextureRect field named "_icon", with the
+    // detail stroke in a sibling "_outline" TextureRect (the game tints the fill per travel state
+    // and carves the linework in Act.MapBgColor on top). We grab BOTH live textures so the minimap
+    // draws nodes in the game's exact visual language (including "?" nodes that have resolved).
     private static readonly FieldInfo NormalIconField = Reflect.Field(typeof(NNormalMapPoint), "_icon");
+    private static readonly FieldInfo NormalOutlineField = Reflect.Field(typeof(NNormalMapPoint), "_outline");
     private static readonly FieldInfo AncientIconField = Reflect.Field(typeof(NAncientMapPoint), "_icon");
+    private static readonly FieldInfo AncientOutlineField = Reflect.Field(typeof(NAncientMapPoint), "_outline");
     // Boss nodes have no _icon; the (non-Spine) act art lives in a "%PlaceholderImage" TextureRect.
     private static readonly FieldInfo BossImageField = Reflect.Field(typeof(NBossMapPoint), "_placeholderImage");
 
-    private static Texture2D? IconOf(NMapPoint np)
+    // The act's own map palette + the boss node art. The game loads the boss art from
+    // EncounterModel.BossNodePath (+".png"/"_outline.png") even when the live node prefers Spine —
+    // so we can always show the REAL boss icon. Second-boss floors use SecondBossEncounter.
+    private static readonly MethodInfo MapBgColorGetter = Reflect.PropertyGetter(ActGetter.ReturnType, "MapBgColor");
+    private static readonly MethodInfo MapTraveledColorGetter = Reflect.PropertyGetter(ActGetter.ReturnType, "MapTraveledColor");
+    private static readonly MethodInfo MapUntraveledColorGetter = Reflect.PropertyGetter(ActGetter.ReturnType, "MapUntraveledColor");
+    private static readonly MethodInfo BossEncounterGetter = Reflect.PropertyGetter(ActGetter.ReturnType, "BossEncounter");
+    private static readonly MethodInfo SecondBossEncounterGetter = Reflect.PropertyGetter(ActGetter.ReturnType, "SecondBossEncounter");
+    private static readonly MethodInfo BossNodePathGetter = Reflect.PropertyGetter(BossEncounterGetter.ReturnType, "BossNodePath");
+    private static readonly MethodInfo EncounterIdGetter = Reflect.PropertyGetter(BossEncounterGetter.ReturnType, "Id");
+    private static readonly MethodInfo RunMapGetter = Reflect.PropertyGetter(RunStateField.FieldType, "Map");
+    private static readonly MethodInfo SecondBossPointGetter = Reflect.PropertyGetter(RunMapGetter.ReturnType, "SecondBossMapPoint");
+
+    private static Texture2D? TextureOf(TextureRect? rect) =>
+        rect != null && GodotObject.IsInstanceValid(rect) ? rect.Texture : null;
+
+    private static Texture2D? IconOf(NMapPoint np) => np switch
     {
-        TextureRect? rect = np switch
+        NNormalMapPoint => TextureOf(NormalIconField.GetValue(np) as TextureRect),
+        NAncientMapPoint => TextureOf(AncientIconField.GetValue(np) as TextureRect),
+        NBossMapPoint => TextureOf(BossImageField.GetValue(np) as TextureRect), // fallback if asset load fails
+        _ => null, // -> letter fallback
+    };
+
+    private static Texture2D? OutlineOf(NMapPoint np) => np switch
+    {
+        NNormalMapPoint => TextureOf(NormalOutlineField.GetValue(np) as TextureRect),
+        NAncientMapPoint => TextureOf(AncientOutlineField.GetValue(np) as TextureRect),
+        _ => null,
+    };
+
+    // The proper boss node art (fill + outline), loaded the same way the game does. Defensive: a
+    // missing asset (unexpected act data) falls back to the placeholder/glyph instead of disabling
+    // the mod — this is game-data availability, not a code bug.
+    private static (Texture2D? icon, Texture2D? outline) BossArt(object runState, object act, MapPoint mp)
+    {
+        try
         {
-            NNormalMapPoint => NormalIconField.GetValue(np) as TextureRect,
-            NAncientMapPoint => AncientIconField.GetValue(np) as TextureRect,
-            NBossMapPoint => BossImageField.GetValue(np) as TextureRect, // real boss art (if not Spine-only)
-            _ => null, // -> letter fallback
-        };
-        return rect != null && GodotObject.IsInstanceValid(rect) ? rect.Texture : null;
+            object? map = RunMapGetter.Invoke(runState, null);
+            object? secondBoss = map == null ? null : SecondBossPointGetter.Invoke(map, null);
+            object? encounter = ReferenceEquals(mp, secondBoss)
+                ? SecondBossEncounterGetter.Invoke(act, null)
+                : BossEncounterGetter.Invoke(act, null);
+            if (encounter == null)
+                return (null, null);
+
+            // Every boss has a unique ICON in ui/run_history/{bossid}.png — the game's own
+            // "this boss" icon art (ImageHelper: "bosses and ancients have unique icons"). This is
+            // the right static art for a map node; the map's animated Spine boss has no static png.
+            if (EncounterIdGetter.Invoke(encounter, null) is ModelId id)
+            {
+                Texture2D? icon = LoadTexture(ImageHelper.GetRoomIconPath(MapPointType.Boss, RoomType.Boss, id));
+                Texture2D? outline = LoadTexture(ImageHelper.GetRoomIconOutlinePath(MapPointType.Boss, RoomType.Boss, id));
+                if (icon != null)
+                    return (icon, outline);
+            }
+
+            // Non-Spine bosses also ship placeholder node art next to the skeleton path.
+            if (BossNodePathGetter.Invoke(encounter, null) is string path && !string.IsNullOrEmpty(path))
+                return (LoadTexture(path + ".png"), LoadTexture(path + "_outline.png"));
+            return (null, null);
+        }
+        catch (Exception ex)
+        {
+            Dbg.Once("bossart", $"boss node art unavailable ({ex.Message}); using placeholder/glyph");
+            return (null, null);
+        }
+    }
+
+    private static Texture2D? LoadTexture(string? path)
+    {
+        if (string.IsNullOrEmpty(path))
+            return null;
+        string res = path.StartsWith("res://") ? path : "res://" + path.TrimStart('/');
+        if (ResourceLoader.Exists(res) && ResourceLoader.Load(res, null, ResourceLoader.CacheMode.Reuse) is Texture2D tex)
+            return tex;
+        Dbg.Once($"tex:{path}", $"texture '{res}' not found");
+        return null;
     }
 
     private const string MapToggleMeta = "deckview_mapstyle_toggle";
@@ -619,7 +245,12 @@ internal static class MiniMapController
             _classicDefaultFocus.FocusNeighborLeft = _classicPreviousLeft;
         if (FlatOpen())
             NCapstoneContainer.Instance?.Close();
+        ReturnLegend();
     }
+
+    // Controller in use? (Used to grab a default focus when the flat page opens under a pad.)
+    // The Instance null-check is legitimate state: no controller manager yet => not on a controller.
+    internal static bool UsingController() => NControllerManager.Instance?.IsUsingController ?? false;
 
     // Is our flat page the currently-shown capstone?
     private static bool FlatOpen()
@@ -647,12 +278,15 @@ internal static class MiniMapController
     // O flips the MODE (flat<->classic), only meaningful while a map is showing.
     internal static void OnFlipKey()
     {
-        if (MapShown()) SetFlat(!DeckViewConfig.PreferFlatMap);
+        if (MapShown()) SetFlat(!FlatMapConfig.PreferFlatMap);
     }
 
     // Is the map showing, in EITHER mode? Flat mode -> our capstone; classic mode -> NMapScreen.IsOpen.
     // (In flat mode the classic screen is never opened, so IsOpen stays false — the two are exclusive.)
     internal static bool MapShown() => FlatOpen() || (NMapScreen.Instance?.IsOpen ?? false);
+
+    // Is OUR flat page the current capstone right now? (For the Open-prefix toggle.)
+    internal static bool FlatShown() => FlatOpen();
 
     // We deliberately closed the map on this process frame — used to swallow the map room's
     // synchronous ReopenMap (fired on capstone-close) so a deliberate close actually stays closed.
@@ -672,8 +306,8 @@ internal static class MiniMapController
             BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
         var gameMap = field?.GetValue(mgr) as System.Collections.IDictionary;
         (Key key, string label)[] ours =
-            { (DeckViewMod.MapKey, "map"), (DeckViewMod.ToggleMiniMapKey, "flip/O"), (DeckViewMod.ToggleDeckModeKey, "deck/T") };
-        var sb = new System.Text.StringBuilder("[DeckView] KEY AUDIT (our key -> colliding game action):");
+            { (FlatMapMod.MapKey, "map"), (FlatMapMod.ToggleMiniMapKey, "flip/O") };
+        var sb = new System.Text.StringBuilder("[FlatMap] KEY AUDIT (our key -> colliding game action):");
         foreach (var (key, label) in ours)
         {
             var hits = new List<string>();
@@ -691,8 +325,8 @@ internal static class MiniMapController
     {
         NMapScreen? s = NMapScreen.Instance;
         string cap = NCapstoneContainer.Instance?.CurrentCapstoneScreen?.GetType().Name ?? "none";
-        return $"[DeckView] {where}: IsOpen={s?.IsOpen} flatOpen={FlatOpen()} " +
-               $"prefFlat={DeckViewConfig.PreferFlatMap} capstone={cap}";
+        return $"[FlatMap] {where}: IsOpen={s?.IsOpen} flatOpen={FlatOpen()} " +
+               $"prefFlat={FlatMapConfig.PreferFlatMap} capstone={cap}";
     }
 
     // Map key: if the map is showing (either mode) -> close it; else -> open it. Opening just calls
@@ -721,8 +355,8 @@ internal static class MiniMapController
     // showing* map in the new mode. Never leaves the other mode visible for a frame.
     internal static void SetFlat(bool flat)
     {
-        Log.Info($"[DeckView] SetFlat({flat}) <- {MapState("setflat")}");
-        DeckViewConfig.PreferFlatMap = flat;
+        Log.Info($"[FlatMap] SetFlat({flat}) <- {MapState("setflat")}");
+        FlatMapConfig.PreferFlatMap = flat;
         MapStyleToggle.SyncAll(flat);
         NMapScreen? screen = NMapScreen.Instance;
         NCapstoneContainer? cc = NCapstoneContainer.Instance;
@@ -761,8 +395,10 @@ internal static class MiniMapController
         screen.AddChild(box);
         // Bottom-left — the SAME spot the flat page puts its "Flat map" toggle, so it reads as one
         // control across the two views.
+        // Hard-left like the flat page's stack (its bottom edge is busy with the game's own map
+        // tools, so sit above them at 80% height, but at the same fully-left x).
         Vector2 vp = screen.GetViewportRect().Size;
-        box.Position = new Vector2(vp.X * 0.04f, vp.Y * 0.80f);
+        box.Position = new Vector2(8f, vp.Y * 0.80f);
         Control? mapDefault = ((IScreenContext)screen).DefaultFocusedControl;
         if (mapDefault != null && GodotObject.IsInstanceValid(mapDefault))
         {
@@ -795,7 +431,7 @@ internal static class MiniMapController
 
         MiniMapModel model = BuildModel(screen);
         Vector2 viewport = screen.GetViewportRect().Size;
-        Log.Info($"[DeckView] flat open: nodes={model.Nodes.Count} edges={model.Edges.Count} " +
+        Log.Info($"[FlatMap] flat open: nodes={model.Nodes.Count} edges={model.Edges.Count} " +
                  $"viewport={viewport} current={(model.Current?.ToString() ?? "none")} " +
                  $"act={model.ActIndex + 1}:'{model.ActName}' floor={model.ActFloor} travelEnabled={model.TravelEnabled}");
 
@@ -803,6 +439,58 @@ internal static class MiniMapController
             _screen = new MiniMapScreen();
         _screen.Configure(model, viewport, coord => Travel(screen, coord));
         cc.Open(_screen);
+        BorrowLegend(screen);
+    }
+
+    // --- The borrowed vanilla Legend panel -------------------------------------------------------
+    private static Control? _legend;
+    private static Node? _legendHome;
+    private static Vector2 _legendHomePos;
+    private static Color _legendHomeModulate;
+    private static bool _legendHomeVisible;
+
+    private static void BorrowLegend(NMapScreen screen)
+    {
+        if (_screen == null || !GodotObject.IsInstanceValid(_screen))
+            return;
+        if (MapLegendField.GetValue(screen) is not Control legend || !GodotObject.IsInstanceValid(legend))
+            return;
+        if (!ReferenceEquals(legend.GetParent(), _screen))
+        {
+            _legend = legend;
+            _legendHome = legend.GetParent();
+            _legendHomePos = legend.Position;
+            _legendHomeModulate = legend.Modulate;
+            _legendHomeVisible = legend.Visible;
+            _legendHome?.RemoveChild(legend);
+            _screen.AddChild(legend);
+        }
+        legend.Visible = true;
+        legend.Modulate = Colors.White;
+        legend.Position = new Vector2(_screen.Size.X * 0.8f, _legendHomePos.Y); // vanilla's own anchor
+    }
+
+    // Give the panel back to the classic map screen exactly as we found it. Runs on page close and
+    // on mod disable; idempotent and validity-guarded (act transitions can free either side).
+    internal static void ReturnLegend()
+    {
+        Control? legend = _legend;
+        _legend = null;
+        if (legend == null || !GodotObject.IsInstanceValid(legend))
+            return;
+        legend.GetParent()?.RemoveChild(legend);
+        if (_legendHome != null && GodotObject.IsInstanceValid(_legendHome))
+        {
+            _legendHome.AddChild(legend);
+            legend.Position = _legendHomePos;
+            legend.Modulate = _legendHomeModulate;
+            legend.Visible = _legendHomeVisible;
+        }
+        else
+        {
+            legend.QueueFree(); // its home is gone (act/screen freed) — don't leak an orphan
+        }
+        _legendHome = null;
     }
 
     // Clicking a travelable node runs the game's own selection path (identical to a real click),
@@ -816,7 +504,7 @@ internal static class MiniMapController
             || np.State != MapPointState.Travelable)
             return;
 
-        Log.Info($"[DeckView] minimap travel -> {coord}");
+        Log.Info($"[FlatMap] minimap travel -> {coord}");
         screen.OnMapPointSelectedLocally(np);
         NCapstoneContainer.Instance?.Close();
     }
@@ -836,13 +524,16 @@ internal static class MiniMapController
             ActName = (string)LocStringFormat.Invoke(ActTitleGetter.Invoke(act, null), null)! ?? "",
             CurrentMarker = (MarkerField.GetValue(screen) as TextureRect)?.Texture,
             TravelEnabled = (bool)TravelEnabledGetter.Invoke(screen, null)!,
+            MapBg = MapBgColorGetter.Invoke(act, null) is Color bg ? bg : new Color(0.05f, 0.06f, 0.09f),
+            PathTraveled = MapTraveledColorGetter.Invoke(act, null) is Color tc ? tc : new Color(0.96f, 0.80f, 0.35f),
+            PathUntraveled = MapUntraveledColorGetter.Invoke(act, null) is Color uc ? uc : new Color(1, 1, 1),
         };
 
         if (PointDictField.GetValue(screen) is not System.Collections.IDictionary dict)
             return model;
 
-        // Pass 1: read the live graph (coords, type, state, icon) and its edges.
-        var raw = new List<(MapCoord coord, MapPointType type, MapPointState state, Texture2D? icon)>();
+        // Pass 1: read the live graph (coords, type, state, icon+outline art) and its edges.
+        var raw = new List<(MapCoord coord, MapPointType type, MapPointState state, Texture2D? icon, Texture2D? outline)>();
         foreach (System.Collections.DictionaryEntry entry in dict)
         {
             if (entry.Value is not NMapPoint np || !GodotObject.IsInstanceValid(np))
@@ -850,7 +541,15 @@ internal static class MiniMapController
             MapPoint mp = np.Point;
             if (mp == null)
                 continue;
-            raw.Add((mp.coord, mp.PointType, np.State, IconOf(np)));
+            Texture2D? icon = IconOf(np);
+            Texture2D? outline = OutlineOf(np);
+            if (np is NBossMapPoint)
+            {
+                (Texture2D? bossIcon, Texture2D? bossOutline) = BossArt(runState, act, mp);
+                icon = bossIcon ?? icon;       // the proper boss art, not a letter/placeholder
+                outline = bossOutline ?? outline;
+            }
+            raw.Add((mp.coord, mp.PointType, np.State, icon, outline));
             foreach (MapPoint child in mp.Children)
                 model.Edges.Add((mp.coord, child.coord));
         }
@@ -877,20 +576,21 @@ internal static class MiniMapController
                 unknownReveals.Add($"{r.coord.row},{r.coord.col}->{eff}");
             }
             if (r.icon != null && GodotObject.IsInstanceValid(r.icon))
-                model.TypeIcons.TryAdd(eff, r.icon); // a representative icon per type, for the tally
+                model.TypeArt.TryAdd(eff, (r.icon, r.outline)); // representative art per type, for the legend
             model.Nodes[r.coord] = new MiniNode
             {
-                Coord = r.coord, Type = r.type, EffType = eff, State = r.state, Icon = r.icon,
+                Coord = r.coord, Type = r.type, EffType = eff, State = r.state,
+                Icon = r.icon, Outline = r.outline,
                 Lane = lane.TryGetValue(r.coord, out int ly) ? ly : r.coord.col,
                 RawLane = r.coord.col,
                 // Reachable = can still be travelled to from where we are (or no current pos yet).
                 Reachable = model.Current is null || reachable.Contains(r.coord),
             };
         }
-        if (DeckViewConfig.DumpMapGraph)
+        if (FlatMapConfig.DumpMapGraph)
         {
             DumpGraph(raw, model.Edges, lane);
-            Log.Info($"[DeckView] visited-? reveals: {(unknownReveals.Count > 0 ? string.Join(" ", unknownReveals) : "(none)")}");
+            Log.Info($"[FlatMap] visited-? reveals: {(unknownReveals.Count > 0 ? string.Join(" ", unknownReveals) : "(none)")}");
         }
         return model;
     }
@@ -923,18 +623,18 @@ internal static class MiniMapController
     // Log the live graph so a real random level can be reconstructed offline and dropped into the
     // layout test harness (layout/Program.cs) as a real-world case.
     private static void DumpGraph(
-        List<(MapCoord coord, MapPointType type, MapPointState state, Texture2D? icon)> raw,
+        List<(MapCoord coord, MapPointType type, MapPointState state, Texture2D? icon, Texture2D? outline)> raw,
         List<(MapCoord From, MapCoord To)> edges, Dictionary<MapCoord, int> lane)
     {
-        var nb = new System.Text.StringBuilder("[DeckView] MAPDUMP nodes(row,col,type):");
+        var nb = new System.Text.StringBuilder("[FlatMap] MAPDUMP nodes(row,col,type):");
         foreach (var r in raw.OrderBy(r => r.coord.row).ThenBy(r => r.coord.col))
             nb.Append($" {r.coord.row},{r.coord.col},{r.type}");
         Log.Info(nb.ToString());
-        var eb = new System.Text.StringBuilder("[DeckView] MAPDUMP edges(row,col->row,col):");
+        var eb = new System.Text.StringBuilder("[FlatMap] MAPDUMP edges(row,col->row,col):");
         foreach (var (f, t) in edges.OrderBy(e => e.From.row).ThenBy(e => e.From.col))
             eb.Append($" {f.row},{f.col}->{t.row},{t.col}");
         Log.Info(eb.ToString());
-        var lb = new System.Text.StringBuilder("[DeckView] MAPDUMP lanes(row,col=lane):");
+        var lb = new System.Text.StringBuilder("[FlatMap] MAPDUMP lanes(row,col=lane):");
         foreach (var kv in lane.OrderBy(k => k.Key.row).ThenBy(k => k.Key.col))
             lb.Append($" {kv.Key.row},{kv.Key.col}={kv.Value}");
         Log.Info(lb.ToString());
@@ -980,12 +680,12 @@ internal static class MiniMapController
         List<string> violations = LayoutInvariants.Check(graph, lanes);
         if (violations.Count > 0)
             throw new InvalidOperationException(
-                "[DeckView] minimap layout produced an ILLEGAL placement: " + string.Join("; ", violations));
+                "[FlatMap] minimap layout produced an ILLEGAL placement: " + string.Join("; ", violations));
 
         var result = new Dictionary<MapCoord, int>();
         foreach (var kv in idOf) result[kv.Key] = lanes[kv.Value];
         _laneCache[key] = result;
-        Log.Info($"[DeckView] minimap layout: {nodes.Count} nodes, {ledges.Count} edges -> " +
+        Log.Info($"[FlatMap] minimap layout: {nodes.Count} nodes, {ledges.Count} edges -> " +
                  $"{lanes.Distinct().Count()} lanes (cached)");
         return result;
     }
@@ -999,10 +699,10 @@ internal static class MapStyleToggle
 
     internal static ToggleSwitch Create()
     {
-        var box = new ToggleSwitch("Flat map", DeckViewConfig.PreferFlatMap, OnToggled)
+        var box = new ToggleSwitch("Flat map", FlatMapConfig.PreferFlatMap, OnToggled)
         {
             ZIndex = 60,
-            Name = "DeckViewMapStyleToggle",
+            Name = "FlatMapMapStyleToggle",
         };
         _boxes.Add(box);
         return box;
@@ -1022,10 +722,11 @@ internal struct MiniNode
 {
     public MapCoord Coord;
     public MapPointType Type;      // the raw point type (Unknown stays Unknown here)
-    public MapPointType EffType;   // effective type for colour/tally: a visited "?" resolves to its real room
+    public MapPointType EffType;   // effective type for colour/legend: a visited "?" resolves to its real room
     public MapPointState State;
-    public Texture2D? Icon; // the game's own room icon; null -> fall back to a letter glyph
-    public int Lane;        // compacted display lane (Y) from MapLayout — NOT the raw game col
+    public Texture2D? Icon;    // the game's own room icon (solid fill shape); null -> letter glyph
+    public Texture2D? Outline; // the game's detail-stroke texture, carved in the map bg colour on top
+    public int Lane;        // compacted display lane from MapLayout — NOT the raw game col
     public int RawLane;     // uncompressed lane == the game's column (for the "raw 1:1" view)
     public bool Reachable;  // can still be travelled to from the current position
 }
@@ -1034,10 +735,14 @@ internal sealed class MiniMapModel
 {
     public readonly Dictionary<MapCoord, MiniNode> Nodes = new();
     public readonly List<(MapCoord From, MapCoord To)> Edges = new();
-    public readonly Dictionary<MapPointType, Texture2D> TypeIcons = new(); // representative icon per type (info panel)
+    // Representative art per type, for the legend (icon + optional outline stroke).
+    public readonly Dictionary<MapPointType, (Texture2D Icon, Texture2D? Outline)> TypeArt = new();
     public MapCoord? Current;
     public bool TravelEnabled;       // can you move right now (current room finished)?
     public Texture2D? CurrentMarker; // the game's "you are here" arrow art (null in multiplayer)
+    public Color MapBg;              // the act's own map background colour (Act.MapBgColor)
+    public Color PathTraveled;       // the act's traveled-path colour (Act.MapTraveledColor)
+    public Color PathUntraveled;     // the act's untraveled-path colour (Act.MapUntraveledColor)
     public string ActName = "";
     public int ActIndex;
     public int ActFloor;
@@ -1102,7 +807,7 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
         Connect(CanvasItem.SignalName.Draw, Callable.From(OnDraw));
         Connect(Control.SignalName.GuiInput, Callable.From<InputEvent>(OnGuiInput));
         _styleToggle = MapStyleToggle.Create();
-        _compressToggle = new ToggleSwitch("Compress", DeckViewConfig.CompressMap, OnCompressToggled) { ZIndex = 60 };
+        _compressToggle = new ToggleSwitch("Compress", FlatMapConfig.CompressMap, OnCompressToggled) { ZIndex = 60 };
         AddChild(_styleToggle);
         AddChild(_compressToggle);
         _styleToggle.Connect(Control.SignalName.FocusEntered, Callable.From(ClearNodeFocus));
@@ -1112,10 +817,32 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
     // Which lane to draw a node at: compressed (flattened) or the raw game column (1:1 view).
     private int LaneOf(MiniNode n) => _compress ? n.Lane : n.RawLane;
 
+    // The original game's size language: elites draw LARGER than ordinary rooms and the boss larger
+    // still, so danger reads at a glance even before colour does. Applied to drawing, hit-testing,
+    // and the focus rects alike (EffType, so a revealed "?" that was an elite grows too).
+    private static float TypeScale(MapPointType t) => t switch
+    {
+        MapPointType.Boss => 1.9f,
+        MapPointType.Elite => 1.35f,
+        MapPointType.Ancient => 1.3f,
+        _ => 1f,
+    };
+
+    private float RadiusOf(MiniNode n) => _nodeRadius * TypeScale(n.EffType);
+
+    // Text/highlight colour with guaranteed contrast against the act's map background: dark ink on
+    // a light surface (Act 1's tan parchment), pale on a dark one.
+    private Color Ink(float alpha)
+    {
+        Color bg = _model?.MapBg ?? new Color(0.05f, 0.06f, 0.09f);
+        float lum = 0.299f * bg.R + 0.587f * bg.G + 0.114f * bg.B;
+        return lum > 0.5f ? new Color(0.20f, 0.14f, 0.08f, alpha) : new Color(0.86f, 0.88f, 0.93f, alpha);
+    }
+
     private void OnCompressToggled(bool on)
     {
         _compress = on;
-        DeckViewConfig.CompressMap = on;
+        FlatMapConfig.CompressMap = on;
         UpdateLayoutPositions();
         RebuildNodeFocusControls();
         QueueRedraw();
@@ -1133,15 +860,18 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
         _hovered = null;
         _focused = null;
         _logDrawOnce = true;
-        _compress = DeckViewConfig.CompressMap;
+        _compress = FlatMapConfig.CompressMap;
         Position = Vector2.Zero;
         Size = viewport; // capstone fills the screen; the game's top bar renders above us
-        // Toggles stacked bottom-left, above the title/hint. "Flat map" sits at the same spot as
-        // the classic-map toggle so it reads as one control across the two views.
-        _styleToggle.SetOn(DeckViewConfig.PreferFlatMap);
+        _styleToggle.SetOn(FlatMapConfig.PreferFlatMap);
         _compressToggle.SetOn(_compress);
-        _styleToggle.Position = new Vector2(viewport.X * 0.04f, viewport.Y * 0.80f);
-        _compressToggle.Position = new Vector2(viewport.X * 0.04f, viewport.Y * 0.855f);
+        // Toggles bottom-left: one tight column, FULLY left-aligned (hard against the screen edge)
+        // and FLUSH to the bottom — each checkbox exactly one line below the previous (measured
+        // heights, no blank lines), stacked upward from the bottom edge.
+        const float tx = 8f;
+        float bottom = viewport.Y - 16f; // flush, but with enough breathing room that no label clips
+        _compressToggle.Position = new Vector2(tx, bottom - _compressToggle.Size.Y);
+        _styleToggle.Position = new Vector2(tx, _compressToggle.Position.Y - _styleToggle.Size.Y - 2f);
         _styleToggle.FocusNeighborBottom = _styleToggle.GetPathTo(_compressToggle);
         _compressToggle.FocusNeighborTop = _compressToggle.GetPathTo(_styleToggle);
         UpdateLayoutPositions();
@@ -1166,7 +896,7 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
         Visible = true; // draw when shown (in case the container left the reused node hidden)
         foreach (StringName hk in BackHotkeys)
             NHotkeyManager.Instance?.PushHotkeyReleasedBinding(hk, OnBack);
-        if (GridHoverGate.UsingController())
+        if (MiniMapController.UsingController())
             DefaultFocusedControl?.GrabFocus();
         QueueRedraw();
     }
@@ -1176,6 +906,7 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
         // The container disables our ProcessMode on close but leaves the node parented; hide it
         // ourselves so our opaque page can't linger over the game once closed.
         Visible = false;
+        MiniMapController.ReturnLegend(); // the borrowed vanilla legend goes home
         foreach (StringName hk in BackHotkeys)
             NHotkeyManager.Instance?.RemoveHotkeyReleasedBinding(hk, OnBack);
     }
@@ -1190,11 +921,13 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
             MiniMapController.CloseMapCompletely();
     }
 
-    // Nearest node whose circle contains pt (a touch generous), else null.
+    // Nearest node whose (type-scaled) circle contains pt (a touch generous), else null.
     private MapCoord? NodeAt(Vector2 pt)
     {
+        if (_model == null) return null;
         foreach (KeyValuePair<MapCoord, Vector2> kv in _positions)
-            if (pt.DistanceTo(kv.Value) <= _nodeRadius * 1.4f)
+            if (_model.Nodes.TryGetValue(kv.Key, out MiniNode n)
+                && pt.DistanceTo(kv.Value) <= RadiusOf(n) * 1.4f)
                 return kv.Key;
         return null;
     }
@@ -1232,14 +965,15 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
                      .OrderBy(n => n.Coord.row).ThenBy(n => LaneOf(n)))
         {
             MapCoord coord = node.Coord;
+            float fr = RadiusOf(node);
             var focus = new MapNodeFocusControl(
                 () => _onTravel?.Invoke(coord),
                 () => { _focused = coord; _hovered = null; QueueRedraw(); },
                 () => { if (_focused is MapCoord c && c.Equals(coord)) { _focused = null; QueueRedraw(); } })
             {
                 Name = $"MapNode_{coord.row}_{coord.col}",
-                Position = _positions[coord] - new Vector2(_nodeRadius * 1.5f, _nodeRadius * 1.5f),
-                Size = new Vector2(_nodeRadius * 3f, _nodeRadius * 3f),
+                Position = _positions[coord] - new Vector2(fr * 1.5f, fr * 1.5f),
+                Size = new Vector2(fr * 3f, fr * 3f),
                 TooltipText = "Travel here",
             };
             AddChild(focus);
@@ -1305,23 +1039,26 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
         }
         float rowSpan = Math.Max(1, maxRow - minRow);
         float refLaneSpan = Math.Max(1, maxRaw - minRaw); // the raw/uncompressed lane count
-        float marginX = Size.X * 0.05f, marginTop = Size.Y * 0.16f, marginBottom = Size.Y * 0.12f;
+        float marginX = Size.X * 0.05f, marginTop = Size.Y * 0.14f, marginBottom = Size.Y * 0.06f;
         float drawW = Size.X - 2f * marginX;
         float drawH = Size.Y - marginTop - marginBottom;
-        // Lane spacing is FIXED to the uncompressed span, NOT re-stretched to fill the height. So the
-        // raw layout fills the area, and a compressed layout (fewer lanes) draws proportionally SHORTER
-        // — the cleared rows become real empty space at the bottom instead of vanishing into a stretch.
-        // Row spacing still fills the width. Node size is the same in both views (consistent row-height).
-        float rowSpacing = drawW / rowSpan;
-        float laneSpacing = drawH / refLaneSpan;
-        _nodeRadius = Mathf.Clamp(Math.Min(rowSpacing, laneSpacing) * 0.34f, 7f, 24f);
 
+        // THE flat map: the vanilla map's own orientation — floors run bottom->top (start at the
+        // bottom, boss at the top) — with exactly one change: it's compressed vertically so the
+        // WHOLE act fits on one screen, every node visible, no scrolling. Lanes run across X,
+        // centered; lane spacing is fixed to the raw span (so Compress shows as a narrower map,
+        // never a stretched one) and capped to a readable aspect.
+        float rowSpacing = drawH / rowSpan;
+        float laneSpacing = Math.Min(drawW / refLaneSpan, rowSpacing * 2.4f);
+        _nodeRadius = Mathf.Clamp(Math.Min(rowSpacing, laneSpacing) * 0.44f, 9f, 30f);
+        float midLane = (minLane + maxLane) * 0.5f;
+        float centerX = marginX + drawW * 0.5f;
         _positions.Clear();
         foreach (MiniNode n in model.Nodes.Values)
         {
             _positions[n.Coord] = new Vector2(
-                marginX + (n.Coord.row - minRow) * rowSpacing,
-                marginTop + (LaneOf(n) - minLane) * laneSpacing); // top-anchored; empty space falls at the bottom
+                centerX + (LaneOf(n) - midLane) * laneSpacing,
+                marginTop + (maxRow - n.Coord.row) * rowSpacing); // row 0 (start) at the bottom
         }
     }
 
@@ -1372,14 +1109,17 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
         Font font = GameStyle.Font ?? GetThemeDefaultFont(); // the game's Kreon UI font
         if (_logDrawOnce)
         {
-            Log.Info($"[DeckView] minimap _Draw size={size} nodes={model?.Nodes.Count ?? -1}");
+            Log.Info($"[FlatMap] minimap _Draw size={size} nodes={model?.Nodes.Count ?? -1}");
             _logDrawOnce = false;
         }
         if (model == null)
             return;
 
         // Opaque backdrop (drawn ALWAYS, before any early-out) hides the real map completely.
-        DrawRect(new Rect2(Vector2.Zero, size), new Color(0.05f, 0.06f, 0.09f, 0.98f));
+        // The act's OWN map background colour (Act.MapBgColor), so the game's icon art sits on
+        // exactly the surface it was drawn for.
+        Color bg = model.MapBg == default ? new Color(0.05f, 0.06f, 0.09f) : model.MapBg;
+        DrawRect(new Rect2(Vector2.Zero, size), new Color(bg.R, bg.G, bg.B, 1f));
 
         if (model.Nodes.Count == 0)
         {
@@ -1398,10 +1138,25 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
                 continue;
             bool traveled = a.State == MapPointState.Traveled && b.State == MapPointState.Traveled;
             bool dead = IsDead(a) || IsDead(b);
-            DrawLine(_positions[from], _positions[to],
-                traveled ? new Color(0.96f, 0.80f, 0.35f, 0.80f)
-                         : dead ? new Color(1, 1, 1, 0.10f) : new Color(1, 1, 1, 0.34f),
-                traveled ? 3f : 2f, true);
+            // Vanilla's connection style: DASHED footpath legs in the act's own path palette
+            // (MapTraveledColor for walked legs, MapUntraveledColor for open ones), trimmed so the
+            // dashes stop at each node's edge instead of running underneath it.
+            Color tp = model.PathTraveled, up = model.PathUntraveled;
+            Color edgeColor = traveled ? new Color(tp.R, tp.G, tp.B, 0.95f)
+                                       : dead ? new Color(up.R, up.G, up.B, 0.18f) : new Color(up.R, up.G, up.B, 0.80f);
+            float edgeWidth = traveled ? 3f : 2.5f;
+            Vector2 pa = _positions[from], pb = _positions[to];
+            Vector2 dir = (pb - pa).Normalized();
+            // Trim to the icons' visual edge (drawn diameter is 2.05 * radius). For vertically-
+            // adjacent nodes the remaining gap is only a few px — a connection MUST still show
+            // there (its absence is information), so when trimming would erase the leg entirely,
+            // draw it untrimmed underneath the icons: the sliver in the gap carries the signal.
+            Vector2 ta = pa + dir * (RadiusOf(a) * 1.025f + 2f);
+            Vector2 tb = pb - dir * (RadiusOf(b) * 1.025f + 2f);
+            if ((tb - ta).Dot(dir) > 4f)
+                DrawDashedLine(ta, tb, edgeColor, edgeWidth, 8f, true);
+            else
+                DrawDashedLine(pa, pb, edgeColor, edgeWidth, 4f, true);
         }
 
         foreach (MiniNode n in model.Nodes.Values)
@@ -1409,7 +1164,7 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
             bool isCurrent = model.Current is MapCoord cc && cc.col == n.Coord.col && cc.row == n.Coord.row;
             bool isHovered = (_hovered is MapCoord hc && hc.col == n.Coord.col && hc.row == n.Coord.row)
                 || (_focused is MapCoord fc && fc.col == n.Coord.col && fc.row == n.Coord.row);
-            DrawNode(font, _positions[n.Coord], _nodeRadius, n, isCurrent, isHovered);
+            DrawNode(font, _positions[n.Coord], n, isCurrent, isHovered);
         }
 
         DrawInfoPanel(font, size, model);
@@ -1418,9 +1173,9 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
     // A room is "dead" when you can no longer reach it AND you never visited it — those get greyed.
     private static bool IsDead(MiniNode n) => n.State != MapPointState.Traveled && !n.Reachable;
 
-    private void DrawNode(Font font, Vector2 p, float r, MiniNode n, bool isCurrent, bool isHovered)
+    private void DrawNode(Font font, Vector2 p, MiniNode n, bool isCurrent, bool isHovered)
     {
-        float rr = n.Type == MapPointType.Boss ? r * 1.5f : r;
+        float rr = RadiusOf(n); // type-scaled: elites larger, boss largest
         bool isStart = n.Type == MapPointType.Ancient;
         bool visited = n.State == MapPointState.Traveled;
         bool dead = IsDead(n); // unreachable & never visited
@@ -1437,8 +1192,6 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
         // out into the same murk as the unreachable-grey nodes.
         Color fill = dead ? new Color(0.26f, 0.28f, 0.32f) : ColorFor(n.EffType);
         float fillA = dead ? 0.55f : dimAsDone ? 0.68f : 1f;
-        Color iconMod = dead ? new Color(0.55f, 0.57f, 0.62f, 0.5f)
-                             : dimAsDone ? new Color(1, 1, 1, 0.82f) : new Color(1, 1, 1, 1);
 
         // A CURRENTLY-TRAVELABLE next room — the live options you can pick right now. Shown ONLY when
         // travel is actually enabled: if you must finish the current room first, these highlights do
@@ -1446,12 +1199,22 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
         // Travelable set is relic-aware, so Wing Boots etc. are respected automatically).
         if (n.State == MapPointState.Travelable && travelEnabled)
         {
-            DrawArc(p, rr + 4f, 0f, Mathf.Tau, 44, new Color(1f, 1f, 1f, 0.95f), 3f, true);
-            DrawArc(p, rr + 8.5f, 0f, Mathf.Tau, 44, new Color(1f, 1f, 1f, 0.38f), 2f, true);
+            DrawArc(p, rr + 4f, 0f, Mathf.Tau, 44, Ink(0.95f), 3f, true);
+            DrawArc(p, rr + 8.5f, 0f, Mathf.Tau, 44, Ink(0.38f), 2f, true);
         }
 
-        DrawCircle(p, rr, new Color(fill.R, fill.G, fill.B, fill.A * fillA));
-        DrawArc(p, rr, 0f, Mathf.Tau, 32, new Color(0, 0, 0, 0.5f * (dimAsDone ? 0.6f : 1f)), 1.5f, true); // outline
+        // WHERE YOU ARE NOW — must be unmissable (the legend row is gone; the display itself has to
+        // say it): a soft blue glow UNDER the node, then the bold blue double-ring, plus the game's
+        // own marker arrow drawn on top afterwards.
+        if (isCurrent)
+            DrawCircle(p, rr * 2.1f, new Color(0.20f, 0.50f, 1f, 0.18f));
+
+        // The node itself: the game's own icon art with its NATURAL interior colours (tinting the
+        // interior made campfires black etc.), over the icon's main body redrawn in our scheme
+        // colour. Dead nodes desaturate the interior; visited ones dim it.
+        Color iconTint = dead ? new Color(0.52f, 0.52f, 0.56f, 0.55f)
+                              : dimAsDone ? new Color(1, 1, 1, 0.72f) : new Color(1, 1, 1, 1);
+        DrawNodeShape(font, p, rr, n.EffType, n.Icon, n.Outline, fill, fillA, iconTint);
 
         // WHERE YOU STARTED — steady cyan double-ring, easy to pick out as the origin.
         if (isStart)
@@ -1459,24 +1222,13 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
             DrawArc(p, rr + 5f, 0f, Mathf.Tau, 44, new Color(0.35f, 0.95f, 1f, 0.95f), 3f, true);
             DrawArc(p, rr + 9f, 0f, Mathf.Tau, 44, new Color(0.35f, 0.95f, 1f, 0.40f), 2f, true);
         }
-        // WHERE YOU ARE NOW — a bold BLUE double-ring around the node (plus the game's own marker
-        // arrow above it, drawn later on top).
         if (isCurrent)
         {
-            DrawArc(p, rr + 5f, 0f, Mathf.Tau, 48, new Color(0.20f, 0.50f, 1f, 1f), 4f, true);
-            DrawArc(p, rr + 10f, 0f, Mathf.Tau, 48, new Color(0.20f, 0.50f, 1f, 0.45f), 2.5f, true);
+            DrawArc(p, rr + 5f, 0f, Mathf.Tau, 48, new Color(0.20f, 0.50f, 1f, 1f), 4.5f, true);
+            DrawArc(p, rr + 10f, 0f, Mathf.Tau, 48, new Color(0.20f, 0.50f, 1f, 0.50f), 2.5f, true);
         }
-        if (isHovered) // under the cursor: bright white ring
-            DrawArc(p, rr + 2f, 0f, Mathf.Tau, 40, new Color(1, 1, 1, 1f), 2.5f, true);
-
-        // The game's own room icon on top of the colour circle. Fall back to a letter glyph when
-        // there's no icon (e.g. a Spine-art boss).
-        if (n.Icon != null && GodotObject.IsInstanceValid(n.Icon))
-        {
-            float d = rr * 1.7f;
-            DrawTextureRect(n.Icon, new Rect2(p.X - d * 0.5f, p.Y - d * 0.5f, d, d), false, iconMod);
-        }
-        else DrawGlyph(font, p, rr, n, iconMod);
+        if (isHovered) // under the cursor: high-contrast ring
+            DrawArc(p, rr + 2f, 0f, Mathf.Tau, 40, Ink(1f), 2.5f, true);
 
         // WHERE YOU ARE NOW — the game's own per-character "you are here" arrow, floated above the
         // node (drawn last, on top), alongside the blue ring. Fallback: a downward blue chevron.
@@ -1484,14 +1236,45 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
             DrawCurrentMarker(p, rr);
     }
 
+    // ONE node's visual, shared by the live map and the legend. Two layers, per the 2026-07-28
+    // directives: (1) the icon's MAIN BODY — the game's `_outline` texture, a dilated solid mask of
+    // the icon shape — redrawn in our scheme colour, slightly lightened, drawn BEHIND; (2) the
+    // game's icon art on top with its NATURAL interior colours (vanilla style preserved). So the
+    // node's outline is the actual item shape carrying the type colour, and the interior looks
+    // exactly like the official map. No icon at all -> colour disc + glyph.
+    private void DrawNodeShape(Font font, Vector2 p, float rr, MapPointType type,
+        Texture2D? icon, Texture2D? outline, Color fill, float fillA, Color iconTint)
+    {
+        if (icon != null && GodotObject.IsInstanceValid(icon))
+        {
+            // 2.05: as large as the icon can draw while still leaving a visible sliver of path
+            // between VERTICALLY-ADJACENT nodes — at 2.4 stacked nodes touched, and a connected
+            // pair was indistinguishable from an unconnected one (playtest bug, 2026-07-28).
+            float d = rr * 2.05f;
+            var rect = new Rect2(p.X - d * 0.5f, p.Y - d * 0.5f, d, d);
+            if (outline != null && GodotObject.IsInstanceValid(outline))
+            {
+                Color body = fill.Lightened(0.30f);
+                DrawTextureRect(outline, rect, false, new Color(body.R, body.G, body.B, fillA));
+            }
+            DrawTextureRect(icon, rect, false, iconTint);
+            return;
+        }
+
+        DrawCircle(p, rr, new Color(fill.R, fill.G, fill.B, fill.A * fillA));
+        DrawArc(p, rr, 0f, Mathf.Tau, 32, new Color(0, 0, 0, 0.5f * fillA), 1.5f, true);
+        DrawGlyph(font, p, rr, type, new Color(1, 1, 1, fillA));
+    }
+
     private void DrawCurrentMarker(Vector2 p, float r)
     {
         Texture2D? marker = _model?.CurrentMarker;
         if (marker != null && GodotObject.IsInstanceValid(marker) && marker.GetWidth() > 0)
         {
-            float w = r * 2.1f;
+            // Kept compact: at whole-act row spacing a large arrow overlaps the node one floor up.
+            float w = r * 1.5f;
             float h = w * (marker.GetHeight() / (float)marker.GetWidth());
-            DrawTextureRect(marker, new Rect2(p.X - w * 0.5f, p.Y - r - h - 1f, w, h), false, new Color(1, 1, 1, 1));
+            DrawTextureRect(marker, new Rect2(p.X - w * 0.5f, p.Y - r * 1.25f - h, w, h), false, new Color(1, 1, 1, 1));
             return;
         }
         float s = r * 0.85f, ty = p.Y - r - 3f;
@@ -1499,9 +1282,9 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
         DrawColoredPolygon(new[] { new Vector2(p.X - s, ty - s * 1.3f), new Vector2(p.X + s, ty - s * 1.3f), new Vector2(p.X, ty) }, blue);
     }
 
-    private void DrawGlyph(Font font, Vector2 p, float rr, MiniNode n, Color iconMod)
+    private void DrawGlyph(Font font, Vector2 p, float rr, MapPointType type, Color iconMod)
     {
-        string glyph = GlyphFor(n.EffType);
+        string glyph = GlyphFor(type);
         if (glyph.Length > 0)
         {
             int gfs = (int)(rr * 1.15f);
@@ -1511,74 +1294,14 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
         }
     }
 
-    // Bottom-right: act name, current floor, and a tally of room types visited so far — a small,
-    // quiet reference so you can move forward with a clear picture. Lines are right-aligned and
-    // stacked upward from the bottom.
+    // Bottom-right: just the act name, quiet and right-aligned. The legend is the game's OWN
+    // Legend panel, borrowed onto this page while it's open (see MiniMapController.BorrowLegend).
     private void DrawInfoPanel(Font font, Vector2 size, MiniMapModel model)
     {
         string actLine = string.IsNullOrEmpty(model.ActName)
             ? $"Act {model.ActIndex + 1}"
             : $"Act {model.ActIndex + 1} — {model.ActName}";
-        string floorLine = $"Floor {model.ActFloor}";
-
-        float right = size.X * 0.96f;
-        var soft = new Color(0.80f, 0.83f, 0.90f, 0.75f);
-        var softer = new Color(0.72f, 0.75f, 0.82f, 0.62f);
-        RightLine(font, right, size.Y * 0.90f, actLine, 22, soft);
-        RightLine(font, right, size.Y * 0.90f + 28, floorLine, 16, softer);
-        DrawTally(font, right, size.Y * 0.90f + 54, model, softer);
-    }
-
-    // The visited-room tally as a row of the game's own room icons + counts (e.g. [monster]×5),
-    // right-aligned. Counts use the effective type, so a revealed "?" tallies as its real room.
-    private void DrawTally(Font font, float right, float y, MiniMapModel model, Color color)
-    {
-        var visited = new Dictionary<MapPointType, int>();
-        foreach (MiniNode n in model.Nodes.Values)
-            if (n.State == MapPointState.Traveled)
-                visited[n.EffType] = visited.GetValueOrDefault(n.EffType) + 1;
-
-        MapPointType[] order =
-        {
-            MapPointType.Monster, MapPointType.Elite, MapPointType.RestSite,
-            MapPointType.Shop, MapPointType.Treasure, MapPointType.Unknown,
-        };
-        var items = new List<(Texture2D? icon, string label, MapPointType type)>();
-        foreach (MapPointType t in order)
-            if (visited.TryGetValue(t, out int cnt) && cnt > 0)
-                items.Add((model.TypeIcons.GetValueOrDefault(t), $"×{cnt}", t));
-        if (items.Count == 0)
-        {
-            RightLine(font, right, y, "none visited yet", 16, color);
-            return;
-        }
-
-        const int fs = 16;
-        const float iconSz = 20f, iconGap = 2f, itemGap = 14f;
-        float ItemWidth((Texture2D? icon, string label, MapPointType type) it) =>
-            (it.icon != null ? iconSz + iconGap : font.GetStringSize(GlyphFor(it.type) + " ", HorizontalAlignment.Left, -1, fs).X)
-            + font.GetStringSize(it.label, HorizontalAlignment.Left, -1, fs).X;
-
-        float total = -itemGap;
-        foreach (var it in items) total += ItemWidth(it) + itemGap;
-
-        float x = right - total;
-        foreach (var it in items)
-        {
-            if (it.icon != null && GodotObject.IsInstanceValid(it.icon))
-            {
-                DrawTextureRect(it.icon, new Rect2(x, y - iconSz * 0.82f, iconSz, iconSz), false, new Color(1, 1, 1, 0.9f));
-                x += iconSz + iconGap;
-            }
-            else
-            {
-                string g = GlyphFor(it.type) + " ";
-                DrawString(font, new Vector2(x, y), g, HorizontalAlignment.Left, -1, fs, color);
-                x += font.GetStringSize(g, HorizontalAlignment.Left, -1, fs).X;
-            }
-            DrawString(font, new Vector2(x, y), it.label, HorizontalAlignment.Left, -1, fs, color);
-            x += font.GetStringSize(it.label, HorizontalAlignment.Left, -1, fs).X + itemGap;
-        }
+        RightLine(font, size.X * 0.96f, size.Y * 0.93f, actLine, 22, Ink(0.85f));
     }
 
     private void RightLine(Font font, float right, float y, string text, int fontSize, Color color)
@@ -1587,7 +1310,7 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
         DrawString(font, new Vector2(right - w, y), text, HorizontalAlignment.Left, -1, fontSize, color);
     }
 
-    // DeckView's own palette (intentionally not the game's art) — picked for at-a-glance
+    // FlatMap's own palette (intentionally not the game's art) — picked for at-a-glance
     // contrast between room types.
     private static Color ColorFor(MapPointType t) => t switch
     {
@@ -1647,14 +1370,25 @@ internal static class NMapScreen_Open_Patch
             // so a close actually stays closed instead of instantly bouncing back open.
             if (MiniMapController.SuppressReopenThisFrame())
             {
-                Log.Info("[DeckView] map open suppressed (deliberate close this frame)");
+                Log.Info("[FlatMap] map open suppressed (deliberate close this frame)");
                 __result = __instance;
                 return false;
             }
-            if (!DeckViewConfig.PreferFlatMap)
+            if (!FlatMapConfig.PreferFlatMap)
             {
-                Log.Info("[DeckView] classic map open");
+                Log.Info("[FlatMap] classic map open");
                 return true;
+            }
+            // The standard map controls must always toggle. The top-bar map button (next to the
+            // deck) calls Open() unconditionally — the classic screen's IsOpen stays false in flat
+            // mode, so the game thinks the map is closed. If our flat page IS the current capstone,
+            // treat this Open() as the toggle-off it was meant to be.
+            if (MiniMapController.FlatShown())
+            {
+                Log.Info("[FlatMap] map open while flat page shown -> toggle off");
+                MiniMapController.CloseMapCompletely();
+                __result = __instance;
+                return false;
             }
             MiniMapController.OpenFlatFromHook(__instance);
             __result = __instance;
@@ -1707,7 +1441,7 @@ internal static class NInputManager_ShortcutKey_Patch
                 MiniMapController.OnMapKey();
                 return false;
             }
-            if (k.Keycode == DeckViewMod.ToggleMiniMapKey && MiniMapController.MapShown())
+            if (k.Keycode == FlatMapMod.ToggleMiniMapKey && MiniMapController.MapShown())
             {
                 MiniMapController.OnFlipKey();
                 return false;

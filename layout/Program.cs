@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using DeckView.Layout;
+using FlatMap.Layout;
 
 // Offline test harness for the pure MapLayout algorithm. No game, no Godot — run with:
 //   dotnet run --project layout/layouttest.csproj
@@ -14,11 +14,39 @@ internal static class Runner
     private static void Fail(string msg) { _failures++; Console.WriteLine($"  FAIL: {msg}"); }
     private static void Expect(bool cond, string msg) { if (!cond) Fail(msg); }
 
+    // A captured real level (Act 1 — Overgrowth, floor 1, seed C7W41TXFEA3Z) with room types, shared
+    // by the ASCII viz and the JSON emitter that feeds the PNG option-renderer.
+    internal const string CapName = "Act1-Overgrowth-F1";
+    internal const string CapNodes =
+        "0,3 1,1 1,3 1,5 2,1 2,2 2,3 2,6 3,1 3,3 3,6 4,1 4,3 4,6 5,1 5,4 5,5 5,6 6,0 6,2 6,4 6,6 " +
+        "7,0 7,2 7,3 7,5 7,6 8,0 8,1 8,3 8,4 8,6 9,0 9,1 9,3 9,4 9,5 9,6 10,0 10,1 10,2 10,4 10,5 10,6 " +
+        "11,1 11,4 11,6 12,2 12,4 12,5 12,6 13,1 13,2 13,4 13,5 14,0 14,2 14,4 14,5 15,0 15,2 15,4 16,3";
+    internal const string CapEdges =
+        "0,3->1,1 0,3->1,3 0,3->1,5 1,1->2,2 1,1->2,1 1,3->2,3 1,5->2,6 2,1->3,1 2,2->3,1 2,3->3,3 " +
+        "2,6->3,6 3,1->4,1 3,3->4,3 3,6->4,6 4,1->5,1 4,3->5,4 4,6->5,6 4,6->5,5 5,1->6,0 5,1->6,2 " +
+        "5,4->6,4 5,5->6,6 5,6->6,6 6,0->7,0 6,2->7,2 6,2->7,3 6,4->7,5 6,6->7,6 6,6->7,5 7,0->8,0 " +
+        "7,2->8,1 7,3->8,3 7,5->8,4 7,6->8,6 8,0->9,0 8,1->9,1 8,3->9,3 8,4->9,5 8,4->9,4 8,6->9,6 " +
+        "9,0->10,0 9,1->10,1 9,3->10,2 9,4->10,4 9,5->10,5 9,5->10,6 9,6->10,6 10,0->11,1 10,1->11,1 " +
+        "10,2->11,1 10,4->11,4 10,5->11,6 10,6->11,6 11,1->12,2 11,4->12,4 11,6->12,5 11,6->12,6 " +
+        "12,2->13,2 12,2->13,1 12,4->13,4 12,5->13,5 12,5->13,4 12,6->13,5 13,1->14,0 13,2->14,2 " +
+        "13,4->14,4 13,5->14,5 14,0->15,0 14,2->15,2 14,4->15,4 14,5->15,4 15,0->16,3 15,2->16,3 15,4->16,3";
+    internal const string CapTypes =
+        "0,3=Ancient 1,1=Monster 1,3=Monster 1,5=Monster 2,1=Monster 2,2=Unknown 2,3=Unknown 2,6=Monster " +
+        "3,1=Unknown 3,3=Monster 3,6=Monster 4,1=Unknown 4,3=Monster 4,6=Monster 5,1=Monster 5,4=Unknown " +
+        "5,5=Shop 5,6=Monster 6,0=Elite 6,2=Monster 6,4=Unknown 6,6=RestSite 7,0=RestSite 7,2=RestSite " +
+        "7,3=Elite 7,5=Unknown 7,6=Elite 8,0=Elite 8,1=Monster 8,3=Monster 8,4=Unknown 8,6=Unknown " +
+        "9,0=Treasure 9,1=Treasure 9,3=Treasure 9,4=Treasure 9,5=Treasure 9,6=Treasure 10,0=Unknown " +
+        "10,1=Monster 10,2=Unknown 10,4=RestSite 10,5=Monster 10,6=Elite 11,1=RestSite 11,4=Monster " +
+        "11,6=Monster 12,2=Monster 12,4=RestSite 12,5=RestSite 12,6=Elite 13,1=Elite 13,2=Monster " +
+        "13,4=Shop 13,5=Unknown 14,0=Monster 14,2=Elite 14,4=Monster 14,5=Shop 15,0=RestSite 15,2=RestSite " +
+        "15,4=RestSite 16,3=Boss";
+
     private static int Main(string[] args)
     {
         if (args.Length > 0 && args[0] == "viz") { CompressionAnalysis(); return 0; }
+        if (args.Length > 0 && args[0] == "viz-json") { EmitOptionsJson(); return 0; }
 
-        Console.WriteLine("=== DeckView map-layout tests ===\n");
+        Console.WriteLine("=== FlatMap map-layout tests ===\n");
         CuratedCases();
         SafetyNetTest();
         PropertyTests(seedCount: 500);
@@ -65,28 +93,37 @@ internal static class Runner
 
     private static void CompressionAnalysis()
     {
-        // The captured level (Act 1 — Overgrowth, floor 17), from the in-game MAPDUMP — the one with
-        // the mid-map single-node peak we're diagnosing.
-        const string nodes =
-            "0,3 1,0 1,2 1,3 2,0 2,2 2,3 3,0 3,2 3,3 4,0 4,2 5,0 5,1 5,2 6,0 6,1 6,2 7,0 7,2 7,3 " +
-            "8,0 8,1 8,2 8,3 8,4 9,0 9,2 9,4 10,0 10,1 10,3 10,5 11,1 11,2 11,3 11,4 11,6 12,2 12,4 12,6 " +
-            "13,1 13,3 13,4 13,6 14,0 14,1 14,4 14,6 15,0 15,1 15,3 15,6 16,3";
-        const string edges =
-            "0,3->1,0 0,3->1,2 0,3->1,3 1,0->2,0 1,2->2,2 1,3->2,3 2,0->3,0 2,2->3,2 2,2->3,3 2,3->3,3 " +
-            "3,0->4,0 3,2->4,2 3,3->4,2 4,0->5,1 4,0->5,0 4,2->5,1 4,2->5,2 5,0->6,0 5,1->6,2 5,1->6,1 " +
-            "5,2->6,2 6,0->7,0 6,1->7,2 6,2->7,3 6,2->7,2 7,0->8,0 7,2->8,1 7,2->8,2 7,2->8,3 7,3->8,4 " +
-            "8,0->9,0 8,1->9,0 8,2->9,2 8,3->9,2 8,4->9,4 9,0->10,0 9,0->10,1 9,2->10,3 9,4->10,3 9,4->10,5 " +
-            "10,0->11,1 10,1->11,2 10,3->11,3 10,3->11,2 10,3->11,4 10,5->11,6 11,1->12,2 11,2->12,2 " +
-            "11,3->12,4 11,4->12,4 11,6->12,6 12,2->13,1 12,2->13,3 12,4->13,4 12,4->13,3 12,6->13,6 " +
-            "13,1->14,0 13,1->14,1 13,3->14,4 13,4->14,4 13,6->14,6 14,0->15,0 14,1->15,1 14,4->15,3 " +
-            "14,6->15,6 15,0->16,3 15,1->16,3 15,3->16,3 15,6->16,3";
-        LGraph g = FromDump(nodes, edges);
+        LGraph g = FromDump(CapNodes, CapEdges);
+
+        // PROBE (item B): is the current layout even locally optimal w.r.t. shifting a WHOLE floor
+        // up/down by one lane? Such a move preserves connectivity + within-floor order (always legal)
+        // but is NOT in HillClimb's move set (single nodes / same-lane runs), so if beneficial ones
+        // exist, the search is stuck in a local optimum that a coordinated move would escape.
+        {
+            int[] cur = MapLayout.AssignLanes(g);
+            int el0 = LayoutMetrics.VerticalEdgeLength(g, cur), bn0 = LayoutMetrics.BendCount(g, cur), ln0 = LayoutMetrics.LanesUsed(cur);
+            Console.WriteLine($"\n>>> WHOLE-FLOOR-SHIFT PROBE (current: edgeLen={el0} bends={bn0} lanes={ln0}):");
+            int localBeat = 0;
+            for (int r = 0; r < g.RowCount; r++)
+                foreach (int delta in new[] { -1, 1 }) // -1 = up (toward lane 0 / top of screen)
+                {
+                    int[] t = (int[])cur.Clone();
+                    foreach (int id in g.RowsOrdered[r]) t[id] += delta;
+                    if (t.Min() < 0 || !LayoutInvariants.IsLegal(g, t)) continue;
+                    int el1 = LayoutMetrics.VerticalEdgeLength(g, t), bn1 = LayoutMetrics.BendCount(g, t), ln1 = LayoutMetrics.LanesUsed(t);
+                    if (el1 < el0 || bn1 < bn0)
+                        Console.WriteLine($"      floor {r,2} {(delta < 0 ? "UP  " : "DOWN")}: edgeLen {el0}->{el1}  bends {bn0}->{bn1}  lanes {ln0}->{ln1}{(ln1 > ln0 ? "  (+lane)" : "")}");
+                    if (el1 < el0 || bn1 < bn0) localBeat++;
+                }
+            if (localBeat == 0) Console.WriteLine("      none — layout is locally optimal under whole-floor shifts.");
+            Console.WriteLine();
+        }
 
         void Show(string name, int[] l) =>
             Console.WriteLine($"\n## {name}\n   lanes={LayoutMetrics.LanesUsed(l)}  edgeLen={LayoutMetrics.VerticalEdgeLength(g, l)}  " +
                               $"bends={LayoutMetrics.BendCount(g, l)}  maxSlope={LayoutMetrics.MaxEdgeSlope(g, l)}  crossings={LayoutMetrics.Crossings(g, l)}  legal={LayoutInvariants.IsLegal(g, l)}\n" + RenderGrid(g, l));
 
-        Console.WriteLine("=== COMPRESSION ANALYSIS — Act 1 Overgrowth F17 ===");
+        Console.WriteLine("=== COMPRESSION ANALYSIS — Act 1 Overgrowth F1 (seed C7W41TXFEA3Z) ===");
         Show("A. baseline (raw game columns)", g.BaselineLanes());
         Show("B. our algorithm (flatten + lane-merge)", MapLayout.AssignLanes(g));
         Show("C. min-pack (max compression, ignores crossings)", MinPack(g));
@@ -102,6 +139,92 @@ internal static class Runner
             if (!conflict) { Console.WriteLine($"   lanes {a}+{a + 1}: MERGEABLE"); found++; }
         }
         if (found == 0) Console.WriteLine("   none — every adjacent lane pair shares a floor, so 6 lanes would overlap two rooms.");
+    }
+
+    // Emit the candidate layouts as JSON on stdout, for the PNG option-renderer
+    // (scripts/render_mapviz.py). Round 1 shows layouts that already exist so the objective can be
+    // calibrated against the eye before any new strategy is coded.
+    private static void EmitOptionsJson()
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.Append("{\"maps\":[");
+
+        // Map 1: the real captured level, with its real room types.
+        LGraph real = FromDump(CapNodes, CapEdges);
+        var realTypes = new Dictionary<(int, int), string>();
+        foreach (string tok in CapTypes.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        {
+            string[] kv = tok.Split('=');
+            string[] rc = kv[0].Split(',');
+            realTypes[(int.Parse(rc[0]), int.Parse(rc[1]))] = kv[1];
+        }
+        sb.Append(MapJson(CapName, real, realTypes));
+
+        // 30 more: random STS-like maps with seeded room types, so we evaluate the SYSTEM across many
+        // shapes, not just one hand-captured level.
+        for (int seed = 0; seed < 30; seed++)
+        {
+            var rng = new Random(seed);
+            LGraph g = RandomStsMap(rng);
+            sb.Append(',').Append(MapJson($"random-{seed:D2}", g, AssignTypes(g, rng)));
+        }
+
+        sb.Append("]}");
+        Console.WriteLine(sb.ToString());
+    }
+
+    private static string MapJson(string name, LGraph g, Dictionary<(int, int), string> type)
+    {
+        string Esc(string s) => s.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        string Option(string optName, int[] lane)
+        {
+            string metrics = $"lanes={LayoutMetrics.LanesUsed(lane)}  bends={LayoutMetrics.BendCount(g, lane)}  " +
+                             $"edgeLen={LayoutMetrics.VerticalEdgeLength(g, lane)}  steepBody={LayoutMetrics.SteepBodyEdges(g, lane)}  " +
+                             $"maxSlope={LayoutMetrics.MaxEdgeSlope(g, lane)}  crossings={LayoutMetrics.Crossings(g, lane)}";
+            string nb = string.Join(",", g.Nodes.Select(n =>
+                $"[{n.Row},{lane[n.Id]},\"{type.GetValueOrDefault((n.Row, n.Col), "Unknown")}\"]"));
+            string eb = string.Join(",", g.Edges.Select(e =>
+                $"[{g.Nodes[e.From].Row},{lane[e.From]},{g.Nodes[e.To].Row},{lane[e.To]}]"));
+            return $"{{\"name\":\"{Esc(optName)}\",\"metrics\":\"{Esc(metrics)}\",\"nodes\":[{nb}],\"edges\":[{eb}]}}";
+        }
+        string[] opts =
+        {
+            Option("A. baseline (raw game columns)", g.BaselineLanes()),
+            Option("B. current shipped algorithm", MapLayout.AssignLanes(g)),
+            Option("C. simple compress (pack toward centerline)", CenterPack(g)),
+            Option("D. gentle slope<=1 (flatness-leaning target)", MapLayout.AssignLanesMaxSlope(g, 1)),
+        };
+        return $"{{\"name\":\"{Esc(name)}\",\"options\":[{string.Join(",", opts)}]}}";
+    }
+
+    // The honest naive-compress baseline: pack each floor's rooms into consecutive lanes CENTERED on
+    // the midline (compress IN toward the centerline), not hugging lane 0. The old top-packing only
+    // ever compressed UP, which read oddly. This is the "naive flat" starting point the beautiful
+    // rules then refine (vs extreme max-compression, which we do NOT want).
+    private static int[] CenterPack(LGraph g)
+    {
+        var lane = new int[g.Nodes.Length];
+        foreach (int[] row in g.RowsOrdered)
+            for (int i = 0; i < row.Length; i++) lane[row[i]] = i - (row.Length - 1) / 2;
+        int min = lane.Min();
+        if (min != 0) for (int i = 0; i < lane.Length; i++) lane[i] -= min;
+        return lane;
+    }
+
+    // Seeded room types for a synthetic map so the rendered examples look map-like (single start/boss
+    // when the extreme rows are single-node).
+    private static Dictionary<(int, int), string> AssignTypes(LGraph g, Random rng)
+    {
+        string[] pool = { "Monster", "Monster", "Monster", "Monster", "Unknown", "Unknown", "Elite", "RestSite", "Shop", "Treasure" };
+        int last = g.RowCount - 1;
+        var type = new Dictionary<(int, int), string>();
+        foreach (LNode n in g.Nodes)
+        {
+            if (g.RowOf[n.Id] == 0 && g.RowsOrdered[0].Length == 1) type[(n.Row, n.Col)] = "Ancient";
+            else if (g.RowOf[n.Id] == last && g.RowsOrdered[last].Length == 1) type[(n.Row, n.Col)] = "Boss";
+            else type[(n.Row, n.Col)] = pool[rng.Next(pool.Length)];
+        }
+        return type;
     }
 
     // ---- fluent graph builder --------------------------------------------------------------
@@ -266,12 +389,23 @@ internal static class Runner
     private static void PropertyTests(int seedCount)
     {
         Console.WriteLine($"-- property tests ({seedCount} random maps) --");
-        int illegal = 0, regressed = 0, improved = 0;
+        int illegal = 0, regressed = 0, improved = 0, orderLeaks = 0;
         long baseLenSum = 0, lenSum = 0, baseLaneSum = 0, laneSum = 0;
 
         for (int seed = 0; seed < seedCount; seed++)
         {
             LGraph g = RandomStsMap(new Random(seed));
+
+            // Order-independence: the layout MUST be a pure function of the graph. Rebuild the SAME
+            // graph with nodes enumerated in a different order (as the game's point-dictionary would)
+            // and assert IDENTICAL lanes keyed by (row,col). A leak here = the game and this offline
+            // harness can diverge, which makes every test untrustworthy. See MapLayout.SameLaneRuns.
+            if (!SameLanesUnderReorder(g, new Random(seed + 999_999)))
+            {
+                orderLeaks++;
+                if (orderLeaks <= 3) Console.WriteLine($"    seed {seed}: layout changed under node reordering (order leak)");
+            }
+
             int[] baseline = g.BaselineLanes();
             int baseLen = LayoutMetrics.VerticalEdgeLength(g, baseline);
             int baseLanes = LayoutMetrics.LanesUsed(baseline);
@@ -287,11 +421,32 @@ internal static class Runner
             baseLenSum += baseLen; lenSum += len; baseLaneSum += baseLanes; laneSum += lanes;
         }
 
-        Console.WriteLine($"  illegal: {illegal}   regressed: {regressed}   improved: {improved}/{seedCount}");
+        Console.WriteLine($"  illegal: {illegal}   regressed: {regressed}   improved: {improved}/{seedCount}   order-leaks: {orderLeaks}");
         Console.WriteLine($"  total edge length {baseLenSum} -> {lenSum}  ({100.0 * (baseLenSum - lenSum) / Math.Max(1, baseLenSum):F1}% shorter)");
         Console.WriteLine($"  total lanes used  {baseLaneSum} -> {laneSum}  ({100.0 * (baseLaneSum - laneSum) / Math.Max(1, baseLaneSum):F1}% fewer)");
         Expect(illegal == 0, $"{illegal} random maps produced an ILLEGAL layout");
         Expect(regressed == 0, $"{regressed} random maps regressed vs baseline");
+        Expect(orderLeaks == 0, $"{orderLeaks} random maps changed layout under node reordering (not a pure function of the graph)");
+    }
+
+    // Rebuild g with its nodes enumerated in a shuffled order (edges unchanged) and check that
+    // AssignLanes produces the same lane for every (row,col). This is the guard that keeps the game
+    // (which lists nodes in point-dictionary order) and the offline harness bit-for-bit identical.
+    private static bool SameLanesUnderReorder(LGraph g, Random rng)
+    {
+        int[] baseLane = MapLayout.AssignLanes(g);
+        var baseByCoord = g.Nodes.ToDictionary(n => (n.Row, n.Col), n => baseLane[n.Id]);
+
+        int[] perm = Enumerable.Range(0, g.Nodes.Length).ToArray();
+        for (int i = perm.Length - 1; i > 0; i--) { int j = rng.Next(i + 1); (perm[i], perm[j]) = (perm[j], perm[i]); }
+
+        var b = new B();
+        foreach (int i in perm) b.Node(g.Nodes[i].Row, g.Nodes[i].Col);   // Ids follow the shuffled order
+        foreach ((int f, int t) in g.Edges) b.E(g.Nodes[f].Row, g.Nodes[f].Col, g.Nodes[t].Row, g.Nodes[t].Col);
+        LGraph gp = b.G();
+
+        int[] permLane = MapLayout.AssignLanes(gp);
+        return gp.Nodes.All(n => baseByCoord[(n.Row, n.Col)] == permLane[n.Id]);
     }
 
     // STS-like generator: a handful of paths that walk up the 7-wide grid, each step moving to an
