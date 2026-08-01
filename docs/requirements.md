@@ -73,14 +73,15 @@ views) and an **alternate map view**. Companion docs: `screen-system.md` (capsto
   `_mapLegend` control is **borrowed** onto the flat page while it's open (vanilla anchor,
   x = width × 0.8) and returned to the classic screen untouched on close/disable.
 - **[done*]** **Legend-hover pulse** (the original's lovely detail, 2026-07-30): mousing over a
-  legend item toggles the same **continuous breathe** used for travelable nodes, for **every node
+  legend item toggles the same **continuous pulse** used for travelable nodes, for **every node
   of that type**. Implemented by hit-testing the borrowed real `NMapLegendItem`s (their fixed node
   names carry the type mapping) on the page tick. **No state-cue row** in or near the legend:
   the display itself carries the states (motion + the marker arrow — see "Node state clarity").
 - **[done*]** **Connections use vanilla's dashed-footpath style** (`DrawDashedLine`), in the act's
   own path palette (`MapTraveledColor` walked / `MapUntraveledColor` open, faded when dead),
   trimmed to stop at each node's edge instead of running underneath.
-- **[done*]** **The taken path is stamped with vanilla's hand-painted ink circle** (2026-07-30):
+- **[done*]** **The taken path is stamped with vanilla's Japanese ensō-style ink
+  circle/chevron** (2026-07-30):
   `NMapCircleVfx`'s settled frame (`map_circle_4.tres` — frames 0..3 are its flipbook) drawn
   around every visited node except the start, with vanilla's own per-node deterministic rotation
   and 0.85–0.90 scale jitter (alpha 0.95), behind the icon. Reproduces the classic map's journal
@@ -103,17 +104,17 @@ views) and an **alternate map view**. Companion docs: `screen-system.md` (capsto
   illustration (icon tinted the act's traveled/ink colour) with its **pale outline stroke**,
   enlarged (×1.45), in EVERY style — **no invented rings or recolours**. Position + size + unique
   art are its cues.
-- **[done*]** **MOTION is the attention language — no static highlighting on any node**
-  (2026-07-30 directive, replacing all halos/rings/glows):
+- **[done*]** **MOTION is the primary attention language** (the current node has no
+  halo/ring/glow; permanent white borders are reserved for actionable next nodes):
   - Hovering **ANY node** (past, present or future) subtly **swells it and holds it large** under
     the mouse; moving away lets it settle back **gradually** (fast in ~0.15s, out ~0.35s) — the
     vanilla map's hover feel. Visual only; hitboxes unchanged.
-  - The **1+ nodes you may travel to RIGHT NOW continuously breathe** — the as-if-hovered
-    expand/shrink cycle — to catch the eye. Shown only when travel is enabled. The set is the
-    game's own **relic-aware** `MapPointState.Travelable` (Wing Boots respected automatically).
-  - Hovering a **travelable** node adds a **WHITE border that expands with it** — white is the
-    game's "next-step option" language, RESERVED for this (never a room-type rim).
-  - Hovering a **legend row** toggles the continuous breathe for **all nodes of that type**.
+  - The **1+ nodes you may travel to RIGHT NOW always have WHITE borders and continuously
+    pulse** using the real map's exact scale function (`sin(elapsed × 4) × 0.25 + 1.2`, independent
+    phase per node). Shown only when travel is enabled. The set is the game's own **relic-aware**
+    `MapPointState.Travelable` (Wing Boots respected automatically). White is the game's
+    "next-step option" language, RESERVED for these borders (never a room-type rim).
+  - Hovering a **legend row** toggles the continuous pulse for **all nodes of that type**.
   - Driven by a per-frame SceneTree tick that runs only while the page is open.
 - **[done]** **Unreachable-and-unvisited** rooms: greyed out; their edges fade. Reachability =
   forward BFS seeded from {current ∪ every Travelable node}, so with Wing Boots more stays lit, and

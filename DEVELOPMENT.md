@@ -34,7 +34,7 @@ integration changes.
 - Managed DLLs live in `…\Slay the Spire 2\data_sts2_windows_x86_64\`.
   The mod references `sts2.dll`, `GodotSharp.dll`, `0Harmony.dll` from there
   (reference-only — nothing is bundled or copied).
-- Current compatibility target: game version **v0.109.0**.
+- Current compatibility target: game version **v0.110.1**.
 
 ## Decompiler (how to read game internals)
 

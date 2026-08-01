@@ -155,7 +155,7 @@ internal static class HookCatalog
         Method(typeof(NCardsViewScreen), "ConnectSignals", missing);
         Field(typeof(NCardsViewScreen), "_showUpgrades", missing);
 
-        Property(typeof(NControllerManager), "IsUsingController", missing);
+        Property(typeof(NControllerManager), "IsUsingDirectionalNavigation", missing);
 
         return missing;
     }

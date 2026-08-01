@@ -49,6 +49,7 @@ internal static class Runner
         Console.WriteLine("=== FlatMap map-layout tests ===\n");
         CuratedCases();
         SafetyNetTest();
+        ExteriorSpikeMetricTest();
         PropertyTests(seedCount: 500);
 
         Console.WriteLine();
@@ -383,6 +384,31 @@ internal static class Runner
         if (row1.Length >= 2) { int t = inverted[row1[0]]; inverted[row1[0]] = inverted[row1[1]]; inverted[row1[1]] = t; }
         Expect(!LayoutInvariants.IsLegal(g, inverted), "checker failed to flag a col-order inversion");
         Console.WriteLine("  checker rejects overlap + inversion: ok");
+    }
+
+    // The screenshot case distilled: one body row reaches a lane farther left than both neighbors.
+    // Extending either adjacent row into that lane turns the sharp tip into a short outer run.
+    private static void ExteriorSpikeMetricTest()
+    {
+        Console.WriteLine("-- exterior contour metric --");
+        var b = new B();
+        for (int r = 0; r < 7; r++)
+        {
+            b.Node(r, 1);
+            if (r is > 0 and < 6) b.Node(r, 3);
+        }
+        b.Node(3, 0);
+        LGraph g = b.G();
+        int[] pointed = g.BaselineLanes();
+        int[] extended = (int[])pointed.Clone();
+        int adjacent = g.Nodes.Single(n => n.Row == 2 && n.Col == 1).Id;
+        extended[adjacent] = 0;
+
+        Expect(LayoutMetrics.ExteriorSpikeCount(g, pointed) == 1,
+            "expected the isolated left protrusion to count as one exterior spike");
+        Expect(LayoutMetrics.ExteriorSpikeCount(g, extended) == 0,
+            "expected extending the adjacent outer lane to remove the spike");
+        Console.WriteLine("  adjacent outer extension removes one-floor spike: ok");
     }
 
     // ---- property tests over hundreds of random STS-like maps ------------------------------

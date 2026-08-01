@@ -93,9 +93,9 @@ public static class MapLayout
         Compact(packed);
 
         // Also build a gentle slope-1-body layout (no mid-map spikes), then pick the best of all three
-        // candidates by a strict priority ladder (see Cost): no steep spikes -> fewest lanes -> fewest
-        // slope-state changes -> shortest travel. Crossings are equal for all, so readability of the
-        // connections is never traded away.
+        // candidates by a strict priority ladder (see Better): no steep edges -> fewest lanes -> no
+        // one-floor exterior spikes -> fewest path bends -> shortest travel. Crossings are equal for
+        // all, so readability of the connections is never traded away.
         int[] gentle = AssignLanesMaxSlope(g, 1);
         int[] best = aligned;
         foreach (int[] c in new[] { packed, gentle })
@@ -118,16 +118,17 @@ public static class MapLayout
         Compact(lane);
     }
 
-    // Lexicographic layout preference (all lower = better): (1) no steep body spikes — a body edge
-    // jumping 2+ lanes, a shape vanilla never makes; (2) fewest lanes (clear whole rows); (3) fewest
-    // slope-STATE changes (bends: prefer "up up" over "up flat up", commit to a level and stay); then
-    // (4) shortest total vertical travel.
+    // Lexicographic layout preference (all lower = better): (1) no steep body edges; (2) fewest
+    // lanes; (3) fewest one-floor spikes in the outside silhouette; (4) fewest path bends; then
+    // (5) shortest total vertical travel.
     private static bool Better(LGraph g, int[] x, int[] best)
     {
         int sx = LayoutMetrics.SteepBodyEdges(g, x), sb = LayoutMetrics.SteepBodyEdges(g, best);
         if (sx != sb) return sx < sb;
         int lx = LayoutMetrics.LanesUsed(x), lb = LayoutMetrics.LanesUsed(best);
         if (lx != lb) return lx < lb;
+        int ox = LayoutMetrics.ExteriorSpikeCount(g, x), ob = LayoutMetrics.ExteriorSpikeCount(g, best);
+        if (ox != ob) return ox < ob;
         int bx = LayoutMetrics.BendCount(g, x), bb = LayoutMetrics.BendCount(g, best);
         if (bx != bb) return bx < bb;
         return LayoutMetrics.VerticalEdgeLength(g, x) < LayoutMetrics.VerticalEdgeLength(g, best);
@@ -223,17 +224,24 @@ public static class MapLayout
                     }
                     else if (edgeDelta == 0)
                     {
-                        // Edge-neutral (no angle added / path not lengthened): take it only if it cuts
-                        // the number of slope-STATE changes (e.g. turns "up flat up" into "up up" by
-                        // bunching the level stretch), then as a final tie-break if it centers. Scored
-                        // by apply-measure-revert (graphs are tiny).
+                        // Edge-neutral (an outer diagonal traded for an inner one): first smooth the
+                        // map's exterior silhouette. This deliberately permits an adjacent outer node
+                        // to move away from center and turn a one-floor spike into a short outer run.
+                        // Then prefer fewer path bends, and only then tighter centering. Scored by
+                        // apply-measure-revert (graphs are tiny).
+                        int lanesBefore = LayoutMetrics.LanesUsed(lane);
+                        int spikeBefore = LayoutMetrics.ExteriorSpikeCount(g, lane);
                         int bendBefore = LayoutMetrics.BendCount(g, lane);
                         int centerBefore = CenterTotal(lane, center2);
                         foreach (int id in set) lane[id] += delta;
+                        int lanesAfter = LayoutMetrics.LanesUsed(lane);
+                        int spikeAfter = LayoutMetrics.ExteriorSpikeCount(g, lane);
                         int bendAfter = LayoutMetrics.BendCount(g, lane);
                         int centerAfter = CenterTotal(lane, center2);
                         foreach (int id in set) lane[id] -= delta;
-                        accept = bendAfter < bendBefore || (bendAfter == bendBefore && centerAfter < centerBefore);
+                        accept = (lanesAfter <= lanesBefore && spikeAfter < spikeBefore)
+                            || (spikeAfter == spikeBefore && (bendAfter < bendBefore
+                                || (bendAfter == bendBefore && centerAfter < centerBefore)));
                     }
                     else accept = false;
                     if (accept)
@@ -410,6 +418,31 @@ public static class LayoutMetrics
 
     // Distinct lanes in use — the drawing's height.
     public static int LanesUsed(int[] lane) => lane.Distinct().Count();
+
+    // Count sharp one-floor tips in the map's outside silhouette. On the left, a row is a spike
+    // when its leftmost node sits farther out than both neighboring rows; the right side is
+    // symmetric. Extending either neighbor into the same outer lane removes the tip and produces
+    // the calmer short outer run seen in vanilla maps. Start/boss rows are excluded because their
+    // single-node fan-out/convergence is structural.
+    public static int ExteriorSpikeCount(LGraph g, int[] lane)
+    {
+        if (g.RowCount < 5) return 0;
+        var min = new int[g.RowCount];
+        var max = new int[g.RowCount];
+        for (int r = 0; r < g.RowCount; r++)
+        {
+            min[r] = g.RowsOrdered[r].Min(id => lane[id]);
+            max[r] = g.RowsOrdered[r].Max(id => lane[id]);
+        }
+
+        int spikes = 0;
+        for (int r = 2; r < g.RowCount - 2; r++)
+        {
+            if (min[r] < min[r - 1] && min[r] < min[r + 1]) spikes++;
+            if (max[r] > max[r - 1] && max[r] > max[r + 1]) spikes++;
+        }
+        return spikes;
+    }
 
     // Steepest single edge (lanes spanned between adjacent floors). 1 == the gentle vanilla shape.
     public static int MaxEdgeSlope(LGraph g, int[] lane) =>

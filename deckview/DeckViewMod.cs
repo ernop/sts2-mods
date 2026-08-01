@@ -60,7 +60,7 @@ public static class DeckViewMod
     // DeckView was built and tested against this game version. On another build, every private
     // hook is preflighted before Harmony changes anything. Missing hooks disable the mod and
     // leave the game's UI untouched instead of crashing or leaving a partially patched mod.
-    public const string TestedGameVersion = "v0.109.0";
+    public const string TestedGameVersion = "v0.110.1";
 
     public static void Init()
     {
@@ -372,8 +372,8 @@ internal static class GridHoverGate
 
     // Controller in use? The reconcile is skipped then, so controller focus still enlarges.
     // The Instance null-check is legitimate state (not error hiding): no controller manager
-    // yet => treat as not using a controller. Any other failure propagates.
-    internal static bool UsingController() => NControllerManager.Instance?.IsUsingController ?? false;
+    // yet => treat as pointer mode. Directional navigation covers controller and keyboard-only.
+    internal static bool UsingController() => NControllerManager.Instance?.IsUsingDirectionalNavigation ?? false;
 
     // Is the mouse genuinely inside this hitbox's current on-screen rect? Uses the full
     // canvas transform (which includes the holder's scale), so it's correct whether the

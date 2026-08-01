@@ -73,8 +73,8 @@ MegaCrit.Sts2.Core.Runs.RunState|Act
 MegaCrit.Sts2.Core.Runs.RunState|MapPointHistory
 MegaCrit.Sts2.Core.Models.ActModel|Title
 MegaCrit.Sts2.Core.Localization.LocString|GetFormattedText
-MegaCrit.Sts2.Core.ControllerInput.NInputManager|ProcessShortcutKeyInput
-MegaCrit.Sts2.Core.ControllerInput.NControllerManager|IsUsingController
+MegaCrit.Sts2.Core.Nodes.CommonUi.NInputManager|ProcessHotkeyInput
+MegaCrit.Sts2.Core.Nodes.CommonUi.NControllerManager|IsUsingDirectionalNavigation
 "
 
 decompile() { # $1 = type ; caches to $TMP/<type>.cs

@@ -15,7 +15,7 @@ combat, rewards, or any other gameplay.**
 |---|---|
 | ![Flat map](docs/images/flat-map.png) | ![Mini-cards](docs/images/deck-view.png) |
 
-> **Compatibility target: Slay the Spire 2 `v0.109.0`.**
+> **Compatibility target: Slay the Spire 2 `v0.110.1`.**
 >
 > Each mod checks every game hook before enabling. If an STS2 update moves an internal member,
 > the mod logs the missing hooks, disables itself, and leaves the vanilla UI running. Harmony
@@ -36,13 +36,13 @@ page (its own top bar, ESC/back, controller routing).
   item**, not a circle. The original size language holds: **elites draw larger, the boss
   largest**, using each boss's real icon art. The **game's own Legend panel** appears exactly as
   on the classic map.
-- **State in motion, like the original.** No static highlighting: hovering any room swells it
-  under the cursor; the rooms you can travel to *right now* breathe continuously (relic-aware
-  incl. Wing Boots), and hovering one adds the white "next step" border; hovering a legend row
-  makes every room of that type breathe. Your spot is marked by the game's own "you are here"
+- **State in motion, like the original.** Hovering any room swells it under the cursor; the rooms
+  you can travel to *right now* always carry white "next step" borders and pulse continuously at
+  the vanilla map's rate (relic-aware incl. Wing Boots); hovering a legend row makes every room
+  of that type pulse. Your spot is marked by the game's own "you are here"
   arrow; your past route keeps its colours slightly dimmed (a visited `?` adopts the room it
-  turned out to be); rooms you can no longer reach are faint ghosts. Click a breathing room to
-  travel via the game's own selection path.
+  turned out to be) and vanilla ink-circle marks; rooms you can no longer reach are faint ghosts.
+  Click a pulsing room to travel via the game's own selection path.
 - **Two checkboxes** (bottom-left, saved across runs): **Flat map** (flat vs. classic rendering)
   and **Compress** (off by default — raw 1:1 with the game's columns; on = our lane-compression,
   which provably changes nothing but spacing).
@@ -86,7 +86,7 @@ shrinks the layout cell and the rendered scale together and everything reflows. 
 
 ## Requirements
 
-- Slay the Spire 2 `v0.109.0`.
+- Slay the Spire 2 `v0.110.1`.
 - No gameplay dependencies. Both mods use the game's built-in mod loader.
 
 ## Install
@@ -132,7 +132,7 @@ map-drawing design directives).
 
 ## Status / caveats
 
-- Targets STS2 `v0.109.0`; `TestedGameVersion` in each mod and `min_game_version` in each
+- Targets STS2 `v0.110.1`; `TestedGameVersion` in each mod and `min_game_version` in each
   manifest record that target. Build, hook, and in-game checks in `PUBLISHING.md` are release
   gates.
 - Mouse, keyboard, and controller can activate every checkbox. On the flat map, controller

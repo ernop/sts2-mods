@@ -2,11 +2,11 @@
   "id": "deckview",
   "name": "DeckView",
   "author": "ernes",
-  "description": "Zooms out deck-like views for Slay the Spire 2 so the whole deck is visible at a glance. Shrinks the deck view, draw/discard/exhaust piles, card library, and deck card-select screens; hovering a card pops it back to full size. Leaves the combat hand, inspect popup, and reward/shop screens at normal size. Toggle on screen with the Mini-cards checkbox or press T; the choice persists across runs. Changes visibility and UI layout only—it does not change cards, routes, combat, rewards, saves, or any other gameplay. (The whole-act map view that older DeckView builds bundled is now the separate FlatMap mod.) Targets Slay the Spire 2 v0.109.0.",
+  "description": "Zooms out deck-like views for Slay the Spire 2 so the whole deck is visible at a glance. Shrinks the deck view, draw/discard/exhaust piles, card library, and deck card-select screens; hovering a card pops it back to full size. Leaves the combat hand, inspect popup, and reward/shop screens at normal size. Toggle on screen with the Mini-cards checkbox or press T; the choice persists across runs. Changes visibility and UI layout only—it does not change cards, routes, combat, rewards, saves, or any other gameplay. (The whole-act map view that older DeckView builds bundled is now the separate FlatMap mod.) Targets Slay the Spire 2 v0.110.1.",
   "version": "0.2.0",
   "has_pck": false,
   "has_dll": true,
   "dependencies": [],
   "affects_gameplay": false,
-  "min_game_version": "0.109.0"
+  "min_game_version": "0.110.1"
 }

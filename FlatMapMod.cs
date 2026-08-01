@@ -46,7 +46,7 @@ public static class FlatMapMod
     // FlatMap was built and tested against this game version. On another build, every private
     // hook is preflighted before Harmony changes anything. Missing hooks disable FlatMap and
     // leave the game's UI untouched instead of crashing or leaving a partially patched mod.
-    public const string TestedGameVersion = "v0.109.0";
+    public const string TestedGameVersion = "v0.110.1";
 
     public static void Init()
     {
@@ -250,9 +250,9 @@ internal static class MiniMapController
         ReturnLegend();
     }
 
-    // Controller in use? (Used to grab a default focus when the flat page opens under a pad.)
-    // The Instance null-check is legitimate state: no controller manager yet => not on a controller.
-    internal static bool UsingController() => NControllerManager.Instance?.IsUsingController ?? false;
+    // Directional navigation in use? (Controller or keyboard-only mode; both need a default focus.)
+    // The Instance null-check is legitimate state: no controller manager yet => pointer mode.
+    internal static bool UsingController() => NControllerManager.Instance?.IsUsingDirectionalNavigation ?? false;
 
     // Is our flat page the currently-shown capstone?
     private static bool FlatOpen()
@@ -263,13 +263,19 @@ internal static class MiniMapController
 
     // Runs while the CLASSIC map is processing (classic mode only — in flat mode NMapScreen is never
     // opened, so this doesn't run). Its only job is to mount the "Flat map" checkbox on the classic
-    // map and keep it hidden under any capstone. The M/O keys are polled globally in GlobalTick.
+    // map and keep it hidden under any capstone. The M/F keys are polled globally in GlobalTick.
     internal static void Tick(NMapScreen screen)
     {
         if (!screen.IsVisibleInTree()) return;
         EnsureMapToggle(screen);
         if (_mapToggle != null && GodotObject.IsInstanceValid(_mapToggle))
+        {
             _mapToggle.Visible = NCapstoneContainer.Instance?.CurrentCapstoneScreen == null;
+            // Re-apply every frame so viewport changes cannot make the classic control drift away
+            // from the exact screen position occupied by "Flat map" on the flat page.
+            Vector2 vp = screen.GetViewportRect().Size;
+            _mapToggle.Position = MapStyleToggle.FlatMapPosition(vp, _mapToggle.Size.Y, _mapToggle.Size.Y);
+        }
     }
 
     // The map is bound to a game key (M by default). We intercept that key in NInputManager and
@@ -305,21 +311,17 @@ internal static class MiniMapController
     {
         if (_keyAuditDone) return;
         _keyAuditDone = true;
-        var field = typeof(NInputManager).GetField("_keyboardInputMap",
-            BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
-        var gameMap = field?.GetValue(mgr) as System.Collections.IDictionary;
         (Key key, string label)[] ours =
             { (FlatMapMod.MapKey, "map"), (FlatMapMod.ToggleMiniMapKey, "flip/F") };
         var sb = new System.Text.StringBuilder("[FlatMap] KEY AUDIT (our key -> colliding game action):");
         foreach (var (key, label) in ours)
         {
             var hits = new List<string>();
-            if (gameMap != null)
-                foreach (System.Collections.DictionaryEntry e in gameMap)
-                    if (e.Value is Key gk && gk == key) hits.Add(e.Key?.ToString() ?? "?");
+            foreach (string input in MegaInput.AllInputs)
+                if (mgr.GetCurrentHotkey(input) == key)
+                    hits.Add(input);
             sb.Append($"  {label}={key}->{(hits.Count > 0 ? string.Join("+", hits) : "none")}");
         }
-        sb.Append(gameMap == null ? "  (game keymap unavailable)" : "");
         Log.Info(sb.ToString());
     }
 
@@ -396,12 +398,11 @@ internal static class MiniMapController
         ToggleSwitch box = MapStyleToggle.Create();
         _mapToggle = box;
         screen.AddChild(box);
-        // Bottom-left — the SAME spot the flat page puts its "Flat map" toggle, so it reads as one
-        // control across the two views.
-        // Hard-left like the flat page's stack (its bottom edge is busy with the game's own map
-        // tools, so sit above them at 80% height, but at the same fully-left x).
+        // Bottom-left — exactly the SAME spot the flat page puts its "Flat map" toggle, so switching
+        // renderings leaves the control stationary. The second height reserves the Compress row
+        // that exists on the flat page; all ToggleSwitch rows share the same measured height.
         Vector2 vp = screen.GetViewportRect().Size;
-        box.Position = new Vector2(8f, vp.Y * 0.80f);
+        box.Position = MapStyleToggle.FlatMapPosition(vp, box.Size.Y, box.Size.Y);
         Control? mapDefault = ((IScreenContext)screen).DefaultFocusedControl;
         if (mapDefault != null && GodotObject.IsInstanceValid(mapDefault))
         {
@@ -704,6 +705,12 @@ internal static class MapStyleToggle
 {
     private static readonly List<ToggleSwitch> _boxes = new();
 
+    // Shared placement for the "Flat map" row in BOTH renderings. On the classic page the
+    // Compress row is absent, but its measured row height remains reserved so this control does
+    // not jump when the user switches map styles.
+    internal static Vector2 FlatMapPosition(Vector2 viewport, float flatHeight, float compressHeight) =>
+        new(8f, viewport.Y - 16f - compressHeight - 2f - flatHeight);
+
     internal static ToggleSwitch Create()
     {
         var box = new ToggleSwitch("Flat map", FlatMapConfig.PreferFlatMap, OnToggled)
@@ -771,7 +778,7 @@ internal sealed partial class MapNodeFocusControl : Control
 
     private void OnGuiInput(InputEvent e)
     {
-        if (!e.IsActionPressed(MegaInput.accept))
+        if (!e.IsActionPressed(MegaInput.confirm))
             return;
         try { _activate(); }
         catch (Exception ex) { ModRuntime.Disable(nameof(MapNodeFocusControl), ex); }
@@ -876,10 +883,10 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
         // Toggles bottom-left: one tight column, FULLY left-aligned (hard against the screen edge)
         // and FLUSH to the bottom — each checkbox exactly one line below the previous (measured
         // heights, no blank lines), stacked upward from the bottom edge.
-        const float tx = 8f;
-        float bottom = viewport.Y - 16f; // flush, but with enough breathing room that no label clips
-        _compressToggle.Position = new Vector2(tx, bottom - _compressToggle.Size.Y);
-        _styleToggle.Position = new Vector2(tx, _compressToggle.Position.Y - _styleToggle.Size.Y - 2f);
+        _styleToggle.Position = MapStyleToggle.FlatMapPosition(
+            viewport, _styleToggle.Size.Y, _compressToggle.Size.Y);
+        _compressToggle.Position = new Vector2(
+            _styleToggle.Position.X, _styleToggle.Position.Y + _styleToggle.Size.Y + 2f);
         _styleToggle.FocusNeighborBottom = _styleToggle.GetPathTo(_compressToggle);
         _compressToggle.FocusNeighborTop = _compressToggle.GetPathTo(_styleToggle);
         UpdateLayoutPositions();
@@ -934,7 +941,7 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
     }
 
     // --- The page tick (per-frame while open) drives all MOTION: the hover swell for every node
-    // (fast in, gradual out), the frontier breathe, and the legend-hover type pulse. We host the
+    // (fast in, gradual out), the frontier pulse, and the legend-hover type pulse. We host the
     // game's REAL legend items, so we hit-test them directly; their fixed node names carry the
     // type mapping (see NMapLegendItem.SetMapPointType).
     private MapPointType? _legendHighlight;
@@ -969,7 +976,7 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
                 }
             }
 
-            // The page is animated whenever it's open (breathing frontier), so redraw each frame.
+            // The page is animated whenever it's open (pulsing frontier), so redraw each frame.
             QueueRedraw();
         }
         catch (Exception ex)
@@ -983,14 +990,15 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
         Control? legend = MiniMapController.BorrowedLegend;
         if (legend == null || !legend.Visible || !legend.IsInsideTree())
             return null;
-        if (legend.GetNodeOrNull("LegendItems") is not Node items)
-            return null;
-        Vector2 mouse = legend.GetGlobalMousePosition();
-        foreach (Node child in items.GetChildren())
+        // The real legend scene nests its NMapLegendItems; do not assume LegendItems is a direct
+        // child. Test each actual item in its own local coordinate space, which remains correct
+        // after the whole panel is reparented onto our capstone.
+        foreach (NMapLegendItem item in DescendantLegendItems(legend))
         {
-            if (child is not Control c || !GodotObject.IsInstanceValid(c) || !c.GetGlobalRect().HasPoint(mouse))
+            if (!GodotObject.IsInstanceValid(item)
+                || !new Rect2(Vector2.Zero, item.Size).HasPoint(item.GetLocalMousePosition()))
                 continue;
-            return c.Name.ToString() switch
+            return item.Name.ToString() switch
             {
                 "UnknownLegendItem" => MapPointType.Unknown,
                 "MerchantLegendItem" => MapPointType.Shop,
@@ -1004,9 +1012,20 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
         return null;
     }
 
+    private static IEnumerable<NMapLegendItem> DescendantLegendItems(Node root)
+    {
+        foreach (Node child in root.GetChildren())
+        {
+            if (child is NMapLegendItem item)
+                yield return item;
+            foreach (NMapLegendItem nested in DescendantLegendItems(child))
+                yield return nested;
+        }
+    }
+
     // ESC/back from the flat page LEAVES THE MAP ENTIRELY -> prior view (fight/reward/room). The flat
     // map is never a sub-layer you peel back to the classic map from: ESC exits the whole map, exactly
-    // as it does from the classic map. (Switching flat<->classic only happens via O or the checkbox.)
+    // as it does from the classic map. (Switching flat<->classic only happens via F or the checkbox.)
     private void OnBack()
     {
         NCapstoneContainer? cc = NCapstoneContainer.Instance;
@@ -1267,13 +1286,12 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
     // --- THE LOOK: Neon Rims (chosen 2026-07-30; the five experimental alternates are retired) --
     // Bright type-coloured rims carry both TYPE and ALIVENESS; visited rooms keep the same
     // identity a bit dimmer; unreachable rooms are faint ghosts; the start is the vanilla ink
-    // illustration. There is NO static highlighting — MOTION is the attention language, exactly
-    // like the original map:
+    // illustration. MOTION is the primary attention language, with permanent white borders
+    // reserved for the actionable next nodes:
     //   - hovering ANY node (past, present or future) swells it and holds it large under the
     //     mouse; moving away lets it settle back gradually
-    //   - the 1+ nodes you can travel to RIGHT NOW breathe continuously, as if hovered
-    //   - hovering a travelable node adds a WHITE border that expands with it (white = next step)
-    //   - hovering a legend row makes every node of that type breathe too
+    //   - the 1+ nodes you can travel to RIGHT NOW pulse continuously with permanent WHITE borders
+    //   - hovering a legend row makes every node of that type pulse continuously too
     // The only fixed cue is the red "you are here" marker arrow.
 
     // High-luminance type palette for rims that must pop on light AND dark act backgrounds.
@@ -1343,14 +1361,16 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
             iconTint = new Color(inkArt.R, inkArt.G, inkArt.B, 1f);
         }
 
-        // MOTION (2026-07-30). Continuous breathe for the travelable frontier and for the
+        // MOTION. Continuous pulse for the travelable frontier and for the
         // legend-hovered type; a hover swell (fast in, gradual out — animated by the page tick)
-        // that dominates while the mouse is on the node. Visual only: hitboxes stay at rr.
+        // that dominates while the mouse is on the node. Vanilla's travelable-point pulse is
+        // exactly sin(elapsed * 4) * 0.25 + 1.2, with an independent starting phase per node.
+        // Visual only: hitboxes stay at rr.
         float swell = 1f;
         if (frontier || (_legendHighlight is MapPointType hl && n.EffType == hl))
         {
             float t = Time.GetTicksMsec() / 1000f;
-            swell = 1f + 0.13f * (0.5f + 0.5f * Mathf.Sin(t * 4.2f));
+            swell = Mathf.Sin(t * 4f + PulsePhase(n.Coord)) * 0.25f + 1.2f;
         }
         float hover = _hoverAnim.GetValueOrDefault(n.Coord); // 0..1
         swell = Mathf.Max(swell, 1f + 0.20f * hover);
@@ -1364,12 +1384,12 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
 
         DrawNodeShape(font, p, vr, n.EffType, n.Icon, n.Outline, rim, thickRim, iconTint);
 
-        // A hovered TRAVELABLE node gets the white border, expanding (and fading in) with it —
-        // white = "next step", the game's own highlight language.
-        if (frontier && hover > 0.03f)
+        // EVERY node available as the next step has a permanent white border. The border follows
+        // the node's native-rate pulse, so both the icon and its selection cue move as one.
+        if (frontier)
         {
-            DrawArc(p, vr + 3f, 0f, Mathf.Tau, 44, WithA(Ink(1f), 0.35f * hover), 4.5f, true);
-            DrawArc(p, vr + 3f, 0f, Mathf.Tau, 44, new Color(1f, 1f, 0.97f, hover), 3f, true);
+            DrawArc(p, vr + 3f, 0f, Mathf.Tau, 44, WithA(Ink(1f), 0.35f), 4.5f, true);
+            DrawArc(p, vr + 3f, 0f, Mathf.Tau, 44, new Color(1f, 1f, 0.97f, 1f), 3f, true);
         }
 
         // The one fixed cue: the game's red "you are here" marker arrow.
@@ -1379,8 +1399,17 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
 
     private static Color WithA(Color c, float a) => new(c.R, c.G, c.B, a);
 
-    // Vanilla's brush-stroke circle art. The Vfx flipbook plays map_circle_0..3 and settles on
-    // map_circle_4 — the settled frame is the one the classic map leaves on every visited node.
+    // Stable independent phase, equivalent in effect to vanilla initializing each point's elapsed
+    // pulse time from Rng.Chaotic. Only phase modulo Tau matters to the sine.
+    private static float PulsePhase(MapCoord coord)
+    {
+        uint h = unchecked((uint)(coord.row * 0x45d9f3b + coord.col * 0x119de1f3));
+        h ^= h >> 16;
+        return (h / (float)uint.MaxValue) * Mathf.Tau;
+    }
+
+    // Vanilla's Japanese ensō-style brush circle/chevron. The Vfx flipbook plays map_circle_0..3
+    // and settles on map_circle_4 — the settled frame the classic map leaves on every visited node.
     private static Texture2D? _inkCircle;
 
     private void DrawInkCircle(Vector2 p, float vr, MapCoord coord)
@@ -1388,7 +1417,22 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
         _inkCircle ??= MiniMapController.LoadTexture(
             "res://images/atlases/compressed.sprites/map/map_circle_4.tres");
         if (_inkCircle == null || !GodotObject.IsInstanceValid(_inkCircle))
+        {
+            // The native texture is mandatory on the supported game build. Keep the taken path
+            // legible even on an incompatible asset pack: an open brush circle plus terminal
+            // chevron preserves the same visual meaning instead of silently drawing nothing.
+            float r = vr * 1.18f;
+            Color ink = _model?.PathTraveled ?? Ink(0.95f);
+            DrawArc(p, r, 0.35f, Mathf.Tau - 0.35f, 40, WithA(ink, 0.95f), 3.5f, true);
+            Vector2 tip = p + new Vector2(r, -r * 0.18f);
+            DrawPolyline(new[]
+            {
+                tip + new Vector2(-5f, -4f),
+                tip,
+                tip + new Vector2(-5f, 4f),
+            }, WithA(ink, 0.95f), 3.5f, true);
             return;
+        }
         // Deterministic per-node "randomness", like vanilla's coord-seeded Rng: a full-turn
         // rotation and the 0.85..0.90 scale jitter, stable across redraws.
         int h = coord.row * 131 + coord.col * 977;
@@ -1454,8 +1498,8 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
             return;
         }
         float s = r * 0.6f, tx = p.X - r - 3f;
-        var blue = new Color(0.20f, 0.50f, 1f, 1f);
-        DrawColoredPolygon(new[] { new Vector2(tx - s * 1.3f, p.Y - s), new Vector2(tx - s * 1.3f, p.Y + s), new Vector2(tx, p.Y) }, blue);
+        var red = new Color(0.90f, 0.18f, 0.14f, 1f);
+        DrawColoredPolygon(new[] { new Vector2(tx - s * 1.3f, p.Y - s), new Vector2(tx - s * 1.3f, p.Y + s), new Vector2(tx, p.Y) }, red);
     }
 
     private void DrawGlyph(Font font, Vector2 p, float rr, MapPointType type, Color iconMod)
@@ -1593,11 +1637,11 @@ internal static class NMapScreen_SetTravelEnabled_Patch
 }
 
 // THE map key. The game hard-binds the map to a key (M by default) and re-broadcasts that key as the
-// `mega_view_map` action here, in NInputManager.ProcessShortcutKeyInput — the one choke point that
+// `mega_view_map` action here, in NInputManager.ProcessHotkeyInput — the one choke point that
 // fires in EVERY context (combat, map room, deck view), regardless of the top-bar button's state.
-// We intercept the map key (honoring rebinds) and our O key here, route to our own toggle, and skip
+// We intercept the map key (honoring rebinds) and our F key here, route to our own toggle, and skip
 // the original so the vanilla map action is NEVER broadcast — one handler, no double-toggle.
-[HarmonyPatch(typeof(NInputManager), "ProcessShortcutKeyInput")]
+[HarmonyPatch(typeof(NInputManager), "ProcessHotkeyInput")]
 internal static class NInputManager_ShortcutKey_Patch
 {
     // The method's first parameter is the base InputEvent (see HookCatalog): declare it as that
@@ -1612,7 +1656,7 @@ internal static class NInputManager_ShortcutKey_Patch
             NInputManager? mgr = NInputManager.Instance;
             if (mgr == null) return true;
             MiniMapController.AuditKeysOnce(mgr);
-            if (k.Keycode == mgr.GetShortcutKey(MegaInput.viewMap))
+            if (k.Keycode == mgr.GetCurrentHotkey(MegaInput.viewMap))
             {
                 MiniMapController.OnMapKey();
                 return false;

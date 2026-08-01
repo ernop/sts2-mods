@@ -159,7 +159,7 @@ internal sealed partial class ToggleSwitch : Control
             return;
         }
 
-        if (e.IsActionPressed(MegaInput.accept))
+        if (e.IsActionPressed(MegaInput.confirm))
         {
             Toggle();
             AcceptEvent();

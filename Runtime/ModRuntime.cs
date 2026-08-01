@@ -183,12 +183,12 @@ internal static class HookCatalog
         // The method's first parameter is the base InputEvent (our patch reads __args[0] and casts to
         // InputEventKey). So require the first param to be a type that an InputEventKey fits into
         // (InputEvent or InputEventKey) — NOT that it's exactly InputEventKey (it isn't).
-        MethodInfo? shortcut = Method(typeof(NInputManager), "ProcessShortcutKeyInput", missing);
+        MethodInfo? shortcut = Method(typeof(NInputManager), "ProcessHotkeyInput", missing);
         if (shortcut != null &&
             (shortcut.GetParameters().Length == 0 ||
              !shortcut.GetParameters()[0].ParameterType.IsAssignableFrom(typeof(InputEventKey))))
-            missing.Add("NInputManager.ProcessShortcutKeyInput(first arg must accept an InputEventKey)");
-        Property(typeof(NControllerManager), "IsUsingController", missing);
+            missing.Add("NInputManager.ProcessHotkeyInput(first arg must accept an InputEventKey)");
+        Property(typeof(NControllerManager), "IsUsingDirectionalNavigation", missing);
 
         return missing;
     }
