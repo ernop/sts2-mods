@@ -1,7 +1,7 @@
 # Build both mods (FlatMap map + DeckView mini-cards) and (optionally) install them into the game's
 # mods folder. The two are fully independent mods; this script just builds them side by side.
 #
-#   .\scripts\build.ps1            # build only -> bin\flatmap.dll + deckview\bin\deckview.dll
+#   .\scripts\build.ps1            # build only -> flatmap\bin\flatmap.dll + deckview\bin\deckview.dll
 #   .\scripts\build.ps1 -Install   # build, then copy each mod's json + dll into
 #                                   # <game>\mods\flatmap\ and <game>\mods\deckview\
 #   .\scripts\build.ps1 -Only flatmap    # limit to one mod (flatmap | deckview)
@@ -24,7 +24,7 @@ if (-not (Test-Path (Join-Path $data "sts2.dll"))) {
 }
 
 $mods = @(
-    @{ Id = "flatmap";  Csproj = Join-Path $root "flatmap.csproj";             Out = Join-Path $root "bin";          Manifest = Join-Path $root "flatmap.json" }
+    @{ Id = "flatmap";  Csproj = Join-Path $root "flatmap\flatmap.csproj";   Out = Join-Path $root "flatmap\bin"; Manifest = Join-Path $root "flatmap\flatmap.json" }
     @{ Id = "deckview"; Csproj = Join-Path $root "deckview\deckview.csproj";  Out = Join-Path $root "deckview\bin"; Manifest = Join-Path $root "deckview\deckview.json" }
 )
 if ($Only) { $mods = @($mods | Where-Object { $_.Id -eq $Only }) }

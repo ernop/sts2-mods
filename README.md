@@ -92,7 +92,7 @@ shrinks the layout cell and the rendered scale together and everything reflows. 
 ## Install
 
 Download the archives you want from
-[GitHub Releases](https://github.com/ernop/sts2-deckview/releases), then extract into the game's
+[GitHub Releases](https://github.com/ernop/sts2-mods/releases), then extract into the game's
 `mods` directory:
 
 ```text
@@ -119,7 +119,7 @@ game-provided `sts2.dll`, `GodotSharp.dll`, and `0Harmony.dll`; none are bundled
 .\scripts\build.ps1 -Install
 ```
 
-Or per mod: `dotnet build flatmap.csproj -c Release -o bin` /
+Or per mod: `dotnet build flatmap\flatmap.csproj -c Release -o flatmap\bin` /
 `dotnet build deckview\deckview.csproj -c Release -o deckview\bin`, then copy each DLL +
 manifest into `…\Slay the Spire 2\mods\<id>\`.
 

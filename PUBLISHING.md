@@ -68,7 +68,7 @@ https://github.com/megacrit/sts2-mod-uploader/releases and run it once to create
 
 Copy into its `content/` directory:
 
-- per mod: `bin/flatmap.dll` + `workshop/content/flatmap.json`, and
+- per mod: `flatmap/bin/flatmap.dll` + `workshop/content/flatmap.json`, and
   `deckview/bin/deckview.dll` + `workshop/content/deckview.json` (one Workshop item each)
 
 Copy `docs/images/deck-view.png` to the workspace root as `image.png`. Edit the generated

@@ -79,7 +79,7 @@ Notes:
 ```
 
   From WSL you can drive the same thing via:
-  `"/mnt/c/Program Files/dotnet/dotnet.exe" build flatmap.csproj -c Release -o bin`
+  `"/mnt/c/Program Files/dotnet/dotnet.exe" build flatmap/flatmap.csproj -c Release -o flatmap/bin`
   then copy each mod's DLL + manifest into
   `…\Slay the Spire 2\mods\<id>\`.
 - The csproj resolves the game DLL folder from `-p:Sts2Data=…`, the `STS2_DATA`
@@ -93,12 +93,12 @@ Notes:
 The repo hosts **two fully independent mods** (separate DLLs, manifests, Harmony ids, configs,
 hook preflights — no shared assembly):
 
-**FlatMap (map), repo root:**
-- `FlatMapMod.cs` — map controller, Harmony patch boundaries, and map rendering.
-- `Runtime/ModRuntime.cs` — compatibility catalog, guarded Harmony lifecycle, reflection helpers.
-- `Config/FlatMapConfig.cs` — persisted user settings and debug opt-ins (`user://flatmap.cfg`;
+**FlatMap (map), `flatmap/`:**
+- `flatmap/FlatMapMod.cs` — map controller, Harmony patch boundaries, and map rendering.
+- `flatmap/Runtime/ModRuntime.cs` — compatibility catalog, guarded Harmony lifecycle, reflection helpers.
+- `flatmap/Config/FlatMapConfig.cs` — persisted user settings and debug opt-ins (`user://flatmap.cfg`;
   first run migrates the flat preference from the legacy `user://deckview.cfg`).
-- `UI/ToggleSwitch.cs` — game-native toggles and keyboard/controller activation.
+- `flatmap/UI/ToggleSwitch.cs` — game-native toggles and keyboard/controller activation.
 - `layout/` — pure map layout algorithm and property-test executable.
 
 **DeckView (deck zoom), `deckview/`:**

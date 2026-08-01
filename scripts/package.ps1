@@ -1,7 +1,7 @@
 # Build deterministic, user-installable archives for both mods (FlatMap map + DeckView mini-cards).
 [CmdletBinding()]
 param(
-    # CI-only: package prebuilt/stub DLLs (bin\flatmap.dll + deckview\bin\deckview.dll) without
+    # CI-only: package prebuilt/stub DLLs (flatmap\bin\flatmap.dll + deckview\bin\deckview.dll) without
     # rebuilding (no game install needed).
     [switch]$SkipBuild
 )
@@ -20,7 +20,7 @@ if (-not $SkipBuild) {
 }
 
 $mods = @(
-    @{ Id = "flatmap";  Dll = Join-Path $root "bin\flatmap.dll";             Manifest = Join-Path $root "flatmap.json" }
+    @{ Id = "flatmap";  Dll = Join-Path $root "flatmap\bin\flatmap.dll";   Manifest = Join-Path $root "flatmap\flatmap.json" }
     @{ Id = "deckview"; Dll = Join-Path $root "deckview\bin\deckview.dll";  Manifest = Join-Path $root "deckview\deckview.json" }
 )
 

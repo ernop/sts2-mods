@@ -19,8 +19,8 @@ MODS = (
     {
         "id": "flatmap",
         "name": "FlatMap",
-        "manifest": "flatmap.json",
-        "source": "FlatMapMod.cs",
+        "manifest": "flatmap/flatmap.json",
+        "source": "flatmap/FlatMapMod.cs",
     },
     {
         "id": "deckview",
@@ -91,7 +91,7 @@ for relative in ("docs/images/deck-view.png", "docs/images/flat-map.png"):
 
 if not (ROOT / "LICENSE").is_file():
     fail("LICENSE is missing")
-map_source = (ROOT / "FlatMapMod.cs").read_text(encoding="utf-8")
+map_source = (ROOT / "flatmap/FlatMapMod.cs").read_text(encoding="utf-8")
 if "DumpMinimapGraph = true" in map_source:
     fail("production map dumps are enabled")
 
