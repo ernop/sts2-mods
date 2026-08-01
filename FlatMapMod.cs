@@ -32,9 +32,11 @@ namespace FlatMap;
 [ModInitializer(nameof(Init))]
 public static class FlatMapMod
 {
-    // O flips the map STYLE (flat <-> classic) in place — it is NOT global; it only does anything
-    // while a map is already displayed. O = "overview". Change to taste.
-    public const Key ToggleMiniMapKey = Key.O;
+    // F instantly flips between the two display styles of THE ONE map — flat <-> classic — in
+    // place. NOT a layer/stack: whichever is showing, F swaps to the other; M / the map button
+    // still dismiss the whole map from either. Only does anything while a map is displayed.
+    public const Key ToggleMiniMapKey = Key.F;
+
 
     // M is the ONE global map shortcut: from anywhere, it toggles the map's visibility. When it
     // opens the map, the map shows in whatever state the two checkboxes ("Flat map" / "Compress")
@@ -216,7 +218,7 @@ internal static class MiniMapController
         }
     }
 
-    private static Texture2D? LoadTexture(string? path)
+    internal static Texture2D? LoadTexture(string? path)
     {
         if (string.IsNullOrEmpty(path))
             return null;
@@ -281,6 +283,7 @@ internal static class MiniMapController
         if (MapShown()) SetFlat(!FlatMapConfig.PreferFlatMap);
     }
 
+
     // Is the map showing, in EITHER mode? Flat mode -> our capstone; classic mode -> NMapScreen.IsOpen.
     // (In flat mode the classic screen is never opened, so IsOpen stays false — the two are exclusive.)
     internal static bool MapShown() => FlatOpen() || (NMapScreen.Instance?.IsOpen ?? false);
@@ -306,7 +309,7 @@ internal static class MiniMapController
             BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
         var gameMap = field?.GetValue(mgr) as System.Collections.IDictionary;
         (Key key, string label)[] ours =
-            { (FlatMapMod.MapKey, "map"), (FlatMapMod.ToggleMiniMapKey, "flip/O") };
+            { (FlatMapMod.MapKey, "map"), (FlatMapMod.ToggleMiniMapKey, "flip/F") };
         var sb = new System.Text.StringBuilder("[FlatMap] KEY AUDIT (our key -> colliding game action):");
         foreach (var (key, label) in ours)
         {
@@ -469,6 +472,10 @@ internal static class MiniMapController
         legend.Modulate = Colors.White;
         legend.Position = new Vector2(_screen.Size.X * 0.8f, _legendHomePos.Y); // vanilla's own anchor
     }
+
+    // The borrowed panel, for the legend-hover pulse (null when not borrowed / freed).
+    internal static Control? BorrowedLegend =>
+        _legend != null && GodotObject.IsInstanceValid(_legend) ? _legend : null;
 
     // Give the panel back to the classic map screen exactly as we found it. Runs on page close and
     // on mod disable; idempotent and validity-guarded (act transitions can free either side).
@@ -804,6 +811,7 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
     internal MiniMapScreen()
     {
         MouseFilter = MouseFilterEnum.Stop;
+        _tick = Callable.From(OnPageTick);
         Connect(CanvasItem.SignalName.Draw, Callable.From(OnDraw));
         Connect(Control.SignalName.GuiInput, Callable.From<InputEvent>(OnGuiInput));
         _styleToggle = MapStyleToggle.Create();
@@ -824,7 +832,7 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
     {
         MapPointType.Boss => 1.9f,
         MapPointType.Elite => 1.35f,
-        MapPointType.Ancient => 1.3f,
+        MapPointType.Ancient => 1.45f, // the vanilla start illustration is prominently large
         _ => 1f,
     };
 
@@ -898,6 +906,13 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
             NHotkeyManager.Instance?.PushHotkeyReleasedBinding(hk, OnBack);
         if (MiniMapController.UsingController())
             DefaultFocusedControl?.GrabFocus();
+        // Per-frame tick (SceneTree signal — _Process overrides don't fire without source
+        // generators) driving all page motion. Connected only while the page is open.
+        if (!_tickConnected)
+        {
+            GetTree().Connect(SceneTree.SignalName.ProcessFrame, _tick);
+            _tickConnected = true;
+        }
         QueueRedraw();
     }
 
@@ -907,8 +922,86 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
         // ourselves so our opaque page can't linger over the game once closed.
         Visible = false;
         MiniMapController.ReturnLegend(); // the borrowed vanilla legend goes home
+        if (_tickConnected)
+        {
+            GetTree()?.Disconnect(SceneTree.SignalName.ProcessFrame, _tick);
+            _tickConnected = false;
+        }
+        _legendHighlight = null;
+        _hoverAnim.Clear();
         foreach (StringName hk in BackHotkeys)
             NHotkeyManager.Instance?.RemoveHotkeyReleasedBinding(hk, OnBack);
+    }
+
+    // --- The page tick (per-frame while open) drives all MOTION: the hover swell for every node
+    // (fast in, gradual out), the frontier breathe, and the legend-hover type pulse. We host the
+    // game's REAL legend items, so we hit-test them directly; their fixed node names carry the
+    // type mapping (see NMapLegendItem.SetMapPointType).
+    private MapPointType? _legendHighlight;
+    private bool _tickConnected;
+    private readonly Callable _tick;
+    private readonly Dictionary<MapCoord, float> _hoverAnim = new(); // coord -> 0..1 swell progress
+    private ulong _lastTickMs;
+
+    private void OnPageTick()
+    {
+        if (!ModRuntime.Enabled) return;
+        try
+        {
+            ulong now = Time.GetTicksMsec();
+            float dt = Mathf.Clamp((now - _lastTickMs) / 1000f, 0f, 0.1f);
+            _lastTickMs = now;
+
+            _legendHighlight = HoveredLegendType();
+
+            // Hover swell targets: the node under the mouse (or controller focus) grows quickly
+            // and holds; everything else settles back gradually — the vanilla map's feel.
+            if (_model != null)
+            {
+                MapCoord? hov = _hovered ?? _focused;
+                foreach (MapCoord c in _model.Nodes.Keys)
+                {
+                    bool over = hov is MapCoord h && h.col == c.col && h.row == c.row;
+                    float cur = _hoverAnim.GetValueOrDefault(c);
+                    float next = over ? Mathf.Min(1f, cur + dt * 8f) : Mathf.Max(0f, cur - dt * 3f);
+                    if (next <= 0f) _hoverAnim.Remove(c);
+                    else _hoverAnim[c] = next;
+                }
+            }
+
+            // The page is animated whenever it's open (breathing frontier), so redraw each frame.
+            QueueRedraw();
+        }
+        catch (Exception ex)
+        {
+            ModRuntime.Disable(nameof(MiniMapScreen) + ".tick", ex);
+        }
+    }
+
+    private MapPointType? HoveredLegendType()
+    {
+        Control? legend = MiniMapController.BorrowedLegend;
+        if (legend == null || !legend.Visible || !legend.IsInsideTree())
+            return null;
+        if (legend.GetNodeOrNull("LegendItems") is not Node items)
+            return null;
+        Vector2 mouse = legend.GetGlobalMousePosition();
+        foreach (Node child in items.GetChildren())
+        {
+            if (child is not Control c || !GodotObject.IsInstanceValid(c) || !c.GetGlobalRect().HasPoint(mouse))
+                continue;
+            return c.Name.ToString() switch
+            {
+                "UnknownLegendItem" => MapPointType.Unknown,
+                "MerchantLegendItem" => MapPointType.Shop,
+                "TreasureLegendItem" => MapPointType.Treasure,
+                "RestSiteLegendItem" => MapPointType.RestSite,
+                "EnemyLegendItem" => MapPointType.Monster,
+                "EliteLegendItem" => MapPointType.Elite,
+                _ => null,
+            };
+        }
+        return null;
     }
 
     // ESC/back from the flat page LEAVES THE MAP ENTIRELY -> prior view (fight/reward/room). The flat
@@ -1162,9 +1255,7 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
         foreach (MiniNode n in model.Nodes.Values)
         {
             bool isCurrent = model.Current is MapCoord cc && cc.col == n.Coord.col && cc.row == n.Coord.row;
-            bool isHovered = (_hovered is MapCoord hc && hc.col == n.Coord.col && hc.row == n.Coord.row)
-                || (_focused is MapCoord fc && fc.col == n.Coord.col && fc.row == n.Coord.row);
-            DrawNode(font, _positions[n.Coord], n, isCurrent, isHovered);
+            DrawNode(font, _positions[n.Coord], n, isCurrent);
         }
 
         DrawInfoPanel(font, size, model);
@@ -1173,77 +1264,149 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
     // A room is "dead" when you can no longer reach it AND you never visited it — those get greyed.
     private static bool IsDead(MiniNode n) => n.State != MapPointState.Traveled && !n.Reachable;
 
-    private void DrawNode(Font font, Vector2 p, MiniNode n, bool isCurrent, bool isHovered)
+    // --- THE LOOK: Neon Rims (chosen 2026-07-30; the five experimental alternates are retired) --
+    // Bright type-coloured rims carry both TYPE and ALIVENESS; visited rooms keep the same
+    // identity a bit dimmer; unreachable rooms are faint ghosts; the start is the vanilla ink
+    // illustration. There is NO static highlighting — MOTION is the attention language, exactly
+    // like the original map:
+    //   - hovering ANY node (past, present or future) swells it and holds it large under the
+    //     mouse; moving away lets it settle back gradually
+    //   - the 1+ nodes you can travel to RIGHT NOW breathe continuously, as if hovered
+    //   - hovering a travelable node adds a WHITE border that expands with it (white = next step)
+    //   - hovering a legend row makes every node of that type breathe too
+    // The only fixed cue is the red "you are here" marker arrow.
+
+    // High-luminance type palette for rims that must pop on light AND dark act backgrounds.
+    private static Color BrightFor(MapPointType t) => t switch
     {
-        float rr = RadiusOf(n); // type-scaled: elites larger, boss largest
+        MapPointType.Monster => new Color(1.00f, 0.45f, 0.40f),
+        MapPointType.Elite => new Color(0.95f, 0.45f, 1.00f),
+        MapPointType.Boss => new Color(1.00f, 0.35f, 0.35f),
+        MapPointType.Shop => new Color(1.00f, 0.90f, 0.35f),
+        MapPointType.RestSite => new Color(0.45f, 1.00f, 0.55f),
+        MapPointType.Treasure => new Color(1.00f, 0.70f, 0.25f),
+        // Warm coin-gold, NOT white: a white band reads as a UI highlight, not a room type
+        // (playtest directive 2026-07-30). Kept duller than Shop's vivid yellow.
+        MapPointType.Unknown => new Color(0.80f, 0.68f, 0.40f),
+        MapPointType.Ancient => new Color(0.40f, 1.00f, 0.95f),
+        _ => new Color(0.75f, 0.75f, 0.80f),
+    };
+
+    private void DrawNode(Font font, Vector2 p, MiniNode n, bool isCurrent)
+    {
+        float rr = RadiusOf(n); // type-scaled: elites larger, boss largest (hitboxes use this too)
         bool isStart = n.Type == MapPointType.Ancient;
         bool visited = n.State == MapPointState.Traveled;
         bool dead = IsDead(n); // unreachable & never visited
         bool travelEnabled = _model?.TravelEnabled ?? false;
-        // The current node reads as "done" (dimmed like your past rooms) ONLY once you've finished it
-        // and can move on (travel enabled). Before that, your task is still HERE, so it stays
-        // full/active. Start is a landmark and stays full.
+        // The current node reads as "done" only once you've finished it and can move on; before
+        // that your task is still HERE. Start is a landmark and stays full.
         bool doneCurrent = isCurrent && travelEnabled;
         bool visitedPast = visited && !isCurrent && !isStart;
         bool dimAsDone = visitedPast || doneCurrent;
+        bool frontier = n.State == MapPointState.Travelable && travelEnabled;
 
-        // Dead rooms grey out and recede. "Done" rooms keep their room colour but are lightly dimmed —
-        // enough that the first FULL-colour node reads as "still ahead", without washing the room type
-        // out into the same murk as the unreachable-grey nodes.
-        Color fill = dead ? new Color(0.26f, 0.28f, 0.32f) : ColorFor(n.EffType);
-        float fillA = dead ? 0.55f : dimAsDone ? 0.68f : 1f;
-
-        // A CURRENTLY-TRAVELABLE next room — the live options you can pick right now. Shown ONLY when
-        // travel is actually enabled: if you must finish the current room first, these highlights do
-        // NOT appear, because you can't go there yet. A bright white "selectable" halo (the game's
-        // Travelable set is relic-aware, so Wing Boots etc. are respected automatically).
-        if (n.State == MapPointState.Travelable && travelEnabled)
+        Color bright = BrightFor(n.EffType);
+        Color? rim;
+        bool thickRim = false;
+        var iconTint = new Color(1, 1, 1, 1);
+        if (dead)
         {
-            DrawArc(p, rr + 4f, 0f, Mathf.Tau, 44, Ink(0.95f), 3f, true);
-            DrawArc(p, rr + 8.5f, 0f, Mathf.Tau, 44, Ink(0.38f), 2f, true);
+            rim = null; // ghosts lose the rim entirely
+            iconTint = new Color(0.45f, 0.45f, 0.50f, 0.35f);
+        }
+        else if (dimAsDone)
+        {
+            // Visited = clearly the SAME colour/rim/art as the live nodes, just a bit dimmer
+            // (2026-07-30) — the trail's position already says "past".
+            rim = bright.Darkened(0.18f);
+            iconTint = new Color(0.92f, 0.92f, 0.92f, 0.80f);
+        }
+        else
+        {
+            rim = bright;
+            thickRim = true;
         }
 
-        // WHERE YOU ARE NOW — must be unmissable (the legend row is gone; the display itself has to
-        // say it): a soft blue glow UNDER the node, then the bold blue double-ring, plus the game's
-        // own marker arrow drawn on top afterwards.
-        if (isCurrent)
-            DrawCircle(p, rr * 2.1f, new Color(0.20f, 0.50f, 1f, 0.18f));
+        // The boss badge's outline is already massive — a thickened rim turns it into a rough
+        // blob. Its size IS its cue.
+        if (n.EffType == MapPointType.Boss)
+            thickRim = false;
 
-        // The node itself: the game's own icon art with its NATURAL interior colours (tinting the
-        // interior made campfires black etc.), over the icon's main body redrawn in our scheme
-        // colour. Dead nodes desaturate the interior; visited ones dim it.
-        Color iconTint = dead ? new Color(0.52f, 0.52f, 0.56f, 0.55f)
-                              : dimAsDone ? new Color(1, 1, 1, 0.72f) : new Color(1, 1, 1, 1);
-        DrawNodeShape(font, p, rr, n.EffType, n.Icon, n.Outline, fill, fillA, iconTint);
-
-        // WHERE YOU STARTED — steady cyan double-ring, easy to pick out as the origin.
+        // THE START is drawn exactly as the vanilla map draws it: the dark ink illustration with
+        // its pale outline stroke, enlarged — no invented rings or recolours (2026-07-30).
         if (isStart)
         {
-            DrawArc(p, rr + 5f, 0f, Mathf.Tau, 44, new Color(0.35f, 0.95f, 1f, 0.95f), 3f, true);
-            DrawArc(p, rr + 9f, 0f, Mathf.Tau, 44, new Color(0.35f, 0.95f, 1f, 0.40f), 2f, true);
+            Color inkArt = _model?.PathTraveled ?? new Color(0.16f, 0.13f, 0.11f);
+            thickRim = false;
+            rim = new Color(0.96f, 0.95f, 0.90f); // pale stroke, like the original
+            iconTint = new Color(inkArt.R, inkArt.G, inkArt.B, 1f);
         }
-        if (isCurrent)
-        {
-            DrawArc(p, rr + 5f, 0f, Mathf.Tau, 48, new Color(0.20f, 0.50f, 1f, 1f), 4.5f, true);
-            DrawArc(p, rr + 10f, 0f, Mathf.Tau, 48, new Color(0.20f, 0.50f, 1f, 0.50f), 2.5f, true);
-        }
-        if (isHovered) // under the cursor: high-contrast ring
-            DrawArc(p, rr + 2f, 0f, Mathf.Tau, 40, Ink(1f), 2.5f, true);
 
-        // WHERE YOU ARE NOW — the game's own per-character "you are here" arrow, floated above the
-        // node (drawn last, on top), alongside the blue ring. Fallback: a downward blue chevron.
+        // MOTION (2026-07-30). Continuous breathe for the travelable frontier and for the
+        // legend-hovered type; a hover swell (fast in, gradual out — animated by the page tick)
+        // that dominates while the mouse is on the node. Visual only: hitboxes stay at rr.
+        float swell = 1f;
+        if (frontier || (_legendHighlight is MapPointType hl && n.EffType == hl))
+        {
+            float t = Time.GetTicksMsec() / 1000f;
+            swell = 1f + 0.13f * (0.5f + 0.5f * Mathf.Sin(t * 4.2f));
+        }
+        float hover = _hoverAnim.GetValueOrDefault(n.Coord); // 0..1
+        swell = Mathf.Max(swell, 1f + 0.20f * hover);
+        float vr = rr * swell;
+
+        // THE TAKEN PATH — vanilla's hand-painted ink circle (NMapCircleVfx's settled frame,
+        // map_circle_4), stamped around every room you actually visited, with vanilla's own
+        // per-node deterministic rotation + slight scale jitter so the trail looks hand-drawn.
+        if (visited && !isStart)
+            DrawInkCircle(p, vr, n.Coord);
+
+        DrawNodeShape(font, p, vr, n.EffType, n.Icon, n.Outline, rim, thickRim, iconTint);
+
+        // A hovered TRAVELABLE node gets the white border, expanding (and fading in) with it —
+        // white = "next step", the game's own highlight language.
+        if (frontier && hover > 0.03f)
+        {
+            DrawArc(p, vr + 3f, 0f, Mathf.Tau, 44, WithA(Ink(1f), 0.35f * hover), 4.5f, true);
+            DrawArc(p, vr + 3f, 0f, Mathf.Tau, 44, new Color(1f, 1f, 0.97f, hover), 3f, true);
+        }
+
+        // The one fixed cue: the game's red "you are here" marker arrow.
         if (isCurrent)
-            DrawCurrentMarker(p, rr);
+            DrawCurrentMarker(p, vr);
     }
 
-    // ONE node's visual, shared by the live map and the legend. Two layers, per the 2026-07-28
-    // directives: (1) the icon's MAIN BODY — the game's `_outline` texture, a dilated solid mask of
-    // the icon shape — redrawn in our scheme colour, slightly lightened, drawn BEHIND; (2) the
-    // game's icon art on top with its NATURAL interior colours (vanilla style preserved). So the
-    // node's outline is the actual item shape carrying the type colour, and the interior looks
-    // exactly like the official map. No icon at all -> colour disc + glyph.
+    private static Color WithA(Color c, float a) => new(c.R, c.G, c.B, a);
+
+    // Vanilla's brush-stroke circle art. The Vfx flipbook plays map_circle_0..3 and settles on
+    // map_circle_4 — the settled frame is the one the classic map leaves on every visited node.
+    private static Texture2D? _inkCircle;
+
+    private void DrawInkCircle(Vector2 p, float vr, MapCoord coord)
+    {
+        _inkCircle ??= MiniMapController.LoadTexture(
+            "res://images/atlases/compressed.sprites/map/map_circle_4.tres");
+        if (_inkCircle == null || !GodotObject.IsInstanceValid(_inkCircle))
+            return;
+        // Deterministic per-node "randomness", like vanilla's coord-seeded Rng: a full-turn
+        // rotation and the 0.85..0.90 scale jitter, stable across redraws.
+        int h = coord.row * 131 + coord.col * 977;
+        float rot = (h % 360) * (Mathf.Tau / 360f);
+        float sc = 0.85f + 0.05f * ((h % 97) / 97f);
+        float d = vr * 2.05f * 1.30f * sc; // wraps the icon with the stroke riding just outside
+        DrawSetTransform(p, rot, Vector2.One);
+        DrawTextureRect(_inkCircle, new Rect2(-d * 0.5f, -d * 0.5f, d, d), false, new Color(1, 1, 1, 0.95f));
+        DrawSetTransform(Vector2.Zero, 0f, Vector2.One);
+    }
+
+    // ONE node's visual: the icon's MAIN BODY — the game's `_outline` texture, a dilated solid
+    // mask of the icon shape — in the rim colour (thickened via offset passes for live rooms:
+    // "expand the coloured area slightly", 2026-07-30), then the game's icon art with its NATURAL
+    // interior colours. The node's outline is therefore always the actual item shape, never a
+    // circle. No icon at all -> colour disc + glyph.
     private void DrawNodeShape(Font font, Vector2 p, float rr, MapPointType type,
-        Texture2D? icon, Texture2D? outline, Color fill, float fillA, Color iconTint)
+        Texture2D? icon, Texture2D? outline, Color? rim, bool thickRim, Color iconTint)
     {
         if (icon != null && GodotObject.IsInstanceValid(icon))
         {
@@ -1252,18 +1415,26 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
             // pair was indistinguishable from an unconnected one (playtest bug, 2026-07-28).
             float d = rr * 2.05f;
             var rect = new Rect2(p.X - d * 0.5f, p.Y - d * 0.5f, d, d);
-            if (outline != null && GodotObject.IsInstanceValid(outline))
+            if (outline != null && GodotObject.IsInstanceValid(outline) && rim is Color rc)
             {
-                Color body = fill.Lightened(0.30f);
-                DrawTextureRect(outline, rect, false, new Color(body.R, body.G, body.B, fillA));
+                Color body = WithA(rc.Lightened(0.15f), Mathf.Min(1f, iconTint.A + 0.15f));
+                if (thickRim)
+                    for (int i = 0; i < 6; i++)
+                    {
+                        float a = Mathf.Tau * i / 6f;
+                        var off = new Vector2(Mathf.Cos(a), Mathf.Sin(a)) * 2.4f;
+                        DrawTextureRect(outline, new Rect2(rect.Position + off, rect.Size), false, body);
+                    }
+                DrawTextureRect(outline, rect, false, body);
             }
             DrawTextureRect(icon, rect, false, iconTint);
             return;
         }
 
-        DrawCircle(p, rr, new Color(fill.R, fill.G, fill.B, fill.A * fillA));
-        DrawArc(p, rr, 0f, Mathf.Tau, 32, new Color(0, 0, 0, 0.5f * fillA), 1.5f, true);
-        DrawGlyph(font, p, rr, type, new Color(1, 1, 1, fillA));
+        Color fall = rim ?? new Color(0.50f, 0.50f, 0.55f);
+        DrawCircle(p, rr, WithA(fall, iconTint.A));
+        DrawArc(p, rr, 0f, Mathf.Tau, 32, new Color(0, 0, 0, 0.5f * iconTint.A), 1.5f, true);
+        DrawGlyph(font, p, rr, type, new Color(1, 1, 1, Mathf.Max(0.6f, iconTint.A)));
     }
 
     private void DrawCurrentMarker(Vector2 p, float r)
@@ -1271,15 +1442,20 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
         Texture2D? marker = _model?.CurrentMarker;
         if (marker != null && GodotObject.IsInstanceValid(marker) && marker.GetWidth() > 0)
         {
-            // Kept compact: at whole-act row spacing a large arrow overlaps the node one floor up.
-            float w = r * 1.5f;
+            // From the SIDE, not above (user directive 2026-07-29): drawn above at 1.5×r the
+            // arrow covered the node one floor up and the current node itself. The art points
+            // down, so -90° turns it to point right, at the node from the left.
+            float w = r * 1.0f;
             float h = w * (marker.GetHeight() / (float)marker.GetWidth());
-            DrawTextureRect(marker, new Rect2(p.X - w * 0.5f, p.Y - r * 1.25f - h, w, h), false, new Color(1, 1, 1, 1));
+            var center = new Vector2(p.X - r - 4f - h * 0.5f, p.Y);
+            DrawSetTransform(center, -Mathf.Pi / 2f, Vector2.One);
+            DrawTextureRect(marker, new Rect2(-w * 0.5f, -h * 0.5f, w, h), false, new Color(1, 1, 1, 1));
+            DrawSetTransform(Vector2.Zero, 0f, Vector2.One);
             return;
         }
-        float s = r * 0.85f, ty = p.Y - r - 3f;
+        float s = r * 0.6f, tx = p.X - r - 3f;
         var blue = new Color(0.20f, 0.50f, 1f, 1f);
-        DrawColoredPolygon(new[] { new Vector2(p.X - s, ty - s * 1.3f), new Vector2(p.X + s, ty - s * 1.3f), new Vector2(p.X, ty) }, blue);
+        DrawColoredPolygon(new[] { new Vector2(tx - s * 1.3f, p.Y - s), new Vector2(tx - s * 1.3f, p.Y + s), new Vector2(tx, p.Y) }, blue);
     }
 
     private void DrawGlyph(Font font, Vector2 p, float rr, MapPointType type, Color iconMod)

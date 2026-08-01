@@ -71,41 +71,74 @@ views) and an **alternate map view**. Companion docs: `screen-system.md` (capsto
 - **[done]** Two-boss levels draw both bosses (both are in the point dictionary).
 - **[done*]** **Legend = the game's own Legend panel, used exactly**: the real `NMapScreen`
   `_mapLegend` control is **borrowed** onto the flat page while it's open (vanilla anchor,
-  x = width × 0.8) and returned to the classic screen untouched on close/disable. **No state-cue
-  row**: the display itself must make states super obvious (blue glow + double ring + the game's
-  marker arrow on the current node).
+  x = width × 0.8) and returned to the classic screen untouched on close/disable.
+- **[done*]** **Legend-hover pulse** (the original's lovely detail, 2026-07-30): mousing over a
+  legend item toggles the same **continuous breathe** used for travelable nodes, for **every node
+  of that type**. Implemented by hit-testing the borrowed real `NMapLegendItem`s (their fixed node
+  names carry the type mapping) on the page tick. **No state-cue row** in or near the legend:
+  the display itself carries the states (motion + the marker arrow — see "Node state clarity").
 - **[done*]** **Connections use vanilla's dashed-footpath style** (`DrawDashedLine`), in the act's
   own path palette (`MapTraveledColor` walked / `MapUntraveledColor` open, faded when dead),
   trimmed to stop at each node's edge instead of running underneath.
+- **[done*]** **The taken path is stamped with vanilla's hand-painted ink circle** (2026-07-30):
+  `NMapCircleVfx`'s settled frame (`map_circle_4.tres` — frames 0..3 are its flipbook) drawn
+  around every visited node except the start, with vanilla's own per-node deterministic rotation
+  and 0.85–0.90 scale jitter (alpha 0.95), behind the icon. Reproduces the classic map's journal
+  look exactly.
 - **[done*]** **No "Floor N" label** and **no visited tally / "none visited yet"** — the
   visualization carries that information itself.
 
 ### Node state clarity
-- **[done]** **Current position:** a bold **blue double-ring** AND the game's own **"you are here"
-  arrow** (`NMapScreen._marker`'s per-character `MapMarker` texture) floated above the node. Both, on
-  purpose (item B / later revision). Arrow falls back to a blue chevron if the marker art is absent.
+- **[done*]** **Current position: the red marker arrow ONLY** (2026-07-30 — "remove all
+  highlighting from all nodes": the blue glow and blue double-ring are gone). The game's own
+  per-character `MapMarker` texture points at the node **from the left side**, rotated onto its
+  side and kept small (1×r wide) — above-the-node it obscured the node one floor up. Falls back
+  to a small chevron, also from the left, if the marker art is absent.
 - **[done]** **Current node "done vs not-done" (gated on `NMapScreen.IsTravelEnabled`):**
   - *Room finished, travel enabled* → the current node reads as a **done** node (dimmed like your
     past rooms); attention shifts to the highlighted next options.
   - *Room NOT finished yet* → the current node stays **full/active**, so it's obvious your next
     action is *within* the current node. It is not dimmed-as-done.
-- **[done]** **Start:** cyan ring.
-- **[done]** **Live next options** (the rooms you can move to *right now*): a bright white
-  "selectable" halo — deliberately NOT a red arrow, since the character marker above the current node
-  is itself an arrow. Shown **only when travel is enabled**: if you must finish the current room
-  first, these highlights do NOT appear on any downstream node (you can't go there yet). The set is
-  the game's own **relic-aware** `MapPointState.Travelable`, so **Wing Boots** (free travel = the
-  whole next row via `Hook.ShouldAllowFreeTravel`) is respected with no extra logic.
+- **[done*]** **Start:** drawn exactly as the vanilla map draws it (2026-07-30): the dark ink
+  illustration (icon tinted the act's traveled/ink colour) with its **pale outline stroke**,
+  enlarged (×1.45), in EVERY style — **no invented rings or recolours**. Position + size + unique
+  art are its cues.
+- **[done*]** **MOTION is the attention language — no static highlighting on any node**
+  (2026-07-30 directive, replacing all halos/rings/glows):
+  - Hovering **ANY node** (past, present or future) subtly **swells it and holds it large** under
+    the mouse; moving away lets it settle back **gradually** (fast in ~0.15s, out ~0.35s) — the
+    vanilla map's hover feel. Visual only; hitboxes unchanged.
+  - The **1+ nodes you may travel to RIGHT NOW continuously breathe** — the as-if-hovered
+    expand/shrink cycle — to catch the eye. Shown only when travel is enabled. The set is the
+    game's own **relic-aware** `MapPointState.Travelable` (Wing Boots respected automatically).
+  - Hovering a **travelable** node adds a **WHITE border that expands with it** — white is the
+    game's "next-step option" language, RESERVED for this (never a room-type rim).
+  - Hovering a **legend row** toggles the continuous breathe for **all nodes of that type**.
+  - Driven by a per-frame SceneTree tick that runs only while the page is open.
 - **[done]** **Unreachable-and-unvisited** rooms: greyed out; their edges fade. Reachability =
   forward BFS seeded from {current ∪ every Travelable node}, so with Wing Boots more stays lit, and
   without them parallel/future tracks you can't currently reach are greyed.
-- **[done]** **Visited (past)** rooms keep their colour but are **partially dimmed** (~68% fill,
-  softened icon/outline), so the first full-colour node reads as the first one still ahead (item A).
+- **[done*]** **Visited (past)** rooms are **visibly and clearly the same colour/rim/art as the
+  live future nodes, just a bit dimmer** (re-affirmed 2026-07-30 after an ink-silhouette
+  experiment proved far too dark — the trail's position already says "past"). Utterly unreachable
+  rooms remain the strongly-faded ghosts.
+- **[done*]** The `?` rim colour is warm coin-gold, never white/near-white — a white band reads as
+  a UI element, not a room type (2026-07-30).
+- **Sizing policy (2026-07-30):** it is always OK to **shrink large icons as needed** — this mod's
+  whole point is fitting the act on one screen. When icon size conflicts with layout clarity
+  (visible connections between stacked nodes, marker/neighbour crowding, top-bar clearance),
+  shrink rather than fight.
 - **[done]** A visited **`?` node adopts its revealed room** (item F): resolved via
   `_runState.MapPointHistory[act][row].Rooms.First().RoomType`, so it re-colours + tallies as the real
   room (monster/shop/elite/treasure/rest), matching the game's on-entry reveal. The live node already
   carries the resolved icon art. The old "been here" dot is gone — dimming + the resolved icon now
   signal "visited".
+
+### Look experiment (2026-07-29 → resolved 2026-07-30)
+- **[done]** Six named looks were built and cycled in-game with S. **Neon Rims won and is now THE
+  style**; the other five, the S-cycler, the HUD line, and the `map.style` config slot are all
+  **removed**. Along the way the rims' coloured area was **expanded slightly** (thicker offset
+  passes on live nodes), per directive.
 
 ### Interaction
 - **[done]** Hover highlights a node (pointer cursor over travelable ones).
@@ -154,8 +187,10 @@ views) and an **alternate map view**. Companion docs: `screen-system.md` (capsto
 - **[done]** **M** is the only global shortcut (one-time `SceneTree.ProcessFrame` connection from an
   `NGlobalUi._Ready` patch): from any screen it opens the map in the current mode, or closes it to the
   **prior view**. **ESC/back** likewise exits the whole map — in flat mode the classic map was never
-  opened, so falling back to it is *structurally impossible*. **O** — only while a map is showing —
-  flips the mode and re-renders in place.
+  opened, so falling back to it is *structurally impossible*. **F** — only while a map is showing —
+  **instantly flips** flat↔classic in place (2026-07-30; was O). The two views are NOT layers:
+  they are two display styles of the ONE map slot, so from either view M / the map button / ESC
+  dismiss the whole map, and F merely swaps the rendering.
 - **[done]** All toggles are one self-drawn `ToggleSwitch` (game checkbox art, shared font size,
   consistent positions) — item C "all UIs match".
 
@@ -216,7 +251,8 @@ views) and an **alternate map view**. Companion docs: `screen-system.md` (capsto
 ## 6. Iteration batch (from the Overgrowth screenshot) — all shipped
 
 - **[done*] A** Visited nodes keep colour, partially dimmed.
-- **[done*] B** "You are here" = the game's native map-marker arrow above the node (was a gold ring).
+- **[done*] B** "You are here" = the game's native map-marker arrow beside the node (was a gold
+  ring; originally above the node, moved to the left side and shrunk 2026-07-29).
 - **[done*] C** Removed the "O or Esc: back to the map" hint text.
 - **[done*] D** Removed the "MAP" subtitle.
 - **[done*] E** Info-panel tally uses real room icons + counts.

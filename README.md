@@ -36,16 +36,19 @@ page (its own top bar, ESC/back, controller routing).
   item**, not a circle. The original size language holds: **elites draw larger, the boss
   largest**, using each boss's real icon art. The **game's own Legend panel** appears exactly as
   on the classic map.
-- **State at a glance.** Your current spot (blue glow + double ring + the game's own
-  "you are here" arrow), your legal next moves (bright halos, relic-aware incl. Wing Boots),
-  your past route (dimmed, and a visited `?` adopts the room it turned out to be), and rooms you
-  can no longer reach (greyed, edges faded). Click a highlighted room to travel via the game's
-  own selection path.
+- **State in motion, like the original.** No static highlighting: hovering any room swells it
+  under the cursor; the rooms you can travel to *right now* breathe continuously (relic-aware
+  incl. Wing Boots), and hovering one adds the white "next step" border; hovering a legend row
+  makes every room of that type breathe. Your spot is marked by the game's own "you are here"
+  arrow; your past route keeps its colours slightly dimmed (a visited `?` adopts the room it
+  turned out to be); rooms you can no longer reach are faint ghosts. Click a breathing room to
+  travel via the game's own selection path.
 - **Two checkboxes** (bottom-left, saved across runs): **Flat map** (flat vs. classic rendering)
   and **Compress** (off by default — raw 1:1 with the game's columns; on = our lane-compression,
   which provably changes nothing but spacing).
 - **Standard controls always work:** the top-bar map button, the map room, and **M** all toggle
-  the map in either mode; **O** flips flat↔classic while a map is up; ESC/back leaves the map.
+  the map in either mode; **F** instantly flips flat↔classic while a map is up (two display
+  styles of one map — never stacked); ESC/back leaves the map.
 - It only ever *reads* the live map — it never changes your run.
 
 **Compaction (the interesting part).** The act is squeezed onto one screen without ever changing
