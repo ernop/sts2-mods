@@ -936,6 +936,9 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
         }
         _legendHighlight = null;
         _hoverAnim.Clear();
+        _pulsePhase.Clear();
+        _prevHover = null;
+        _pressed = null;
         foreach (StringName hk in BackHotkeys)
             NHotkeyManager.Instance?.RemoveHotkeyReleasedBinding(hk, OnBack);
     }
@@ -948,6 +951,9 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
     private bool _tickConnected;
     private readonly Callable _tick;
     private readonly Dictionary<MapCoord, float> _hoverAnim = new(); // coord -> 0..1 swell progress
+    private readonly Dictionary<MapCoord, float> _pulsePhase = new(); // per-node phase after an unfocus reset
+    private MapCoord? _prevHover;  // to detect hover-exit for the vanilla pulse-phase reset
+    private MapCoord? _pressed;    // travelable node currently held down (vanilla 0.9x squash)
     private ulong _lastTickMs;
 
     private void OnPageTick()
@@ -961,16 +967,30 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
 
             _legendHighlight = HoveredLegendType();
 
-            // Hover swell targets: the node under the mouse (or controller focus) grows quickly
-            // and holds; everything else settles back gradually — the vanilla map's feel.
+            // Hover swell — vanilla's exact curve (2026-08-01): AnimHover reaches full size in
+            // 0.05s, AnimUnhover releases over 0.5s. A hovered LEGEND row holds the same swell
+            // on every node of that type (vanilla's OnHighlightPointType -> AnimHover), matched
+            // on the RAW type like vanilla does (a revealed "?" still answers to the "?" row).
+            // Inaccessible (greyed) rooms never swell from the legend — no attention cue where
+            // no further decision can be made (directive 2026-08-02).
             if (_model != null)
             {
                 MapCoord? hov = _hovered ?? _focused;
-                foreach (MapCoord c in _model.Nodes.Keys)
+                // Vanilla resets a node's pulse timer on unfocus (_elapsedTime = 5π/4) so the
+                // frontier pulse restarts from a trough instead of popping. Emulate by giving
+                // the departed node a phase that lands sin(t*4 + phase) at that same point now.
+                if (_prevHover is MapCoord ph && (hov is not MapCoord nh || nh.col != ph.col || nh.row != ph.row))
+                    _pulsePhase[ph] = 3.926991f - Time.GetTicksMsec() / 1000f * 4f;
+                _prevHover = hov;
+                foreach (KeyValuePair<MapCoord, MiniNode> kv in _model.Nodes)
                 {
-                    bool over = hov is MapCoord h && h.col == c.col && h.row == c.row;
+                    MapCoord c = kv.Key;
+                    MiniNode node = kv.Value;
+                    bool legendHit = _legendHighlight is MapPointType hl && node.Type == hl
+                        && !IsDead(node);
+                    bool over = (hov is MapCoord h && h.col == c.col && h.row == c.row) || legendHit;
                     float cur = _hoverAnim.GetValueOrDefault(c);
-                    float next = over ? Mathf.Min(1f, cur + dt * 8f) : Mathf.Max(0f, cur - dt * 3f);
+                    float next = over ? Mathf.Min(1f, cur + dt / 0.05f) : Mathf.Max(0f, cur - dt / 0.5f);
                     if (next <= 0f) _hoverAnim.Remove(c);
                     else _hoverAnim[c] = next;
                 }
@@ -1199,10 +1219,22 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
             if (changed)
                 QueueRedraw();
         }
-        else if (e is InputEventMouseButton mb && mb.Pressed && mb.ButtonIndex == MouseButton.Left)
+        else if (e is InputEventMouseButton mb && mb.ButtonIndex == MouseButton.Left)
         {
-            if (NodeAt(mb.Position) is MapCoord c && IsTravelable(c))
-                _onTravel?.Invoke(c);
+            // Vanilla presses DOWN (0.9x squash, NMapPoint.DownScale) and travels on RELEASE
+            // over the same node (NButton.OnRelease) — not on press.
+            if (mb.Pressed)
+            {
+                _pressed = NodeAt(mb.Position) is MapCoord c && IsTravelable(c) ? c : null;
+                if (_pressed is not null) QueueRedraw();
+            }
+            else
+            {
+                if (_pressed is MapCoord p && NodeAt(mb.Position) is MapCoord r
+                    && r.col == p.col && r.row == p.row && IsTravelable(r))
+                    _onTravel?.Invoke(r);
+                _pressed = null;
+            }
         }
     }
 
@@ -1283,15 +1315,15 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
     // A room is "dead" when you can no longer reach it AND you never visited it — those get greyed.
     private static bool IsDead(MiniNode n) => n.State != MapPointState.Traveled && !n.Reachable;
 
-    // --- THE LOOK: Neon Rims (chosen 2026-07-30; the five experimental alternates are retired) --
-    // Bright type-coloured rims carry both TYPE and ALIVENESS; visited rooms keep the same
-    // identity a bit dimmer; unreachable rooms are faint ghosts; the start is the vanilla ink
-    // illustration. MOTION is the primary attention language, with permanent white borders
-    // reserved for the actionable next nodes:
-    //   - hovering ANY node (past, present or future) swells it and holds it large under the
-    //     mouse; moving away lets it settle back gradually
-    //   - the 1+ nodes you can travel to RIGHT NOW pulse continuously with permanent WHITE borders
-    //   - hovering a legend row makes every node of that type pulse continuously too
+    // --- THE LOOK (decided 2026-08-01; see docs/vanilla-parity.md §2/§3) ----------------------
+    // Vanilla-exact in every dynamic behavior — the tint table (NMapPoint.TargetColor), the
+    // frontier pulse, the 1.45x hover swell, the 0.9x press squash, the white outline flash on
+    // travelable hover, the legend-row held swell — with exactly TWO colour divergences layered
+    // on top:
+    //   1. the type-coloured rim: the icon's main body drawn in a bright recognizability colour
+    //      where vanilla carves it in the (invisible) map-bg colour, and
+    //   2. unreachable-and-unvisited rooms ghosted (vanilla has no reachability concept), their
+    //      rims removed — no colour where no further decision will ever be made.
     // The only fixed cue is the red "you are here" marker arrow.
 
     // High-luminance type palette for rims that must pop on light AND dark act backgrounds.
@@ -1300,12 +1332,11 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
         MapPointType.Monster => new Color(1.00f, 0.45f, 0.40f),
         MapPointType.Elite => new Color(0.95f, 0.45f, 1.00f),
         MapPointType.Boss => new Color(1.00f, 0.35f, 0.35f),
-        MapPointType.Shop => new Color(1.00f, 0.90f, 0.35f),
+        MapPointType.Shop => new Color(1.00f, 0.84f, 0.00f),     // pure gold (directive 2026-08-01)
         MapPointType.RestSite => new Color(0.45f, 1.00f, 0.55f),
         MapPointType.Treasure => new Color(1.00f, 0.70f, 0.25f),
-        // Warm coin-gold, NOT white: a white band reads as a UI highlight, not a room type
-        // (playtest directive 2026-07-30). Kept duller than Shop's vivid yellow.
-        MapPointType.Unknown => new Color(0.80f, 0.68f, 0.40f),
+        // Light blue (directive 2026-08-01; supersedes the 2026-07-30 warm coin-gold rule).
+        MapPointType.Unknown => new Color(0.60f, 0.80f, 1.00f),
         MapPointType.Ancient => new Color(0.40f, 1.00f, 0.95f),
         _ => new Color(0.75f, 0.75f, 0.80f),
     };
@@ -1317,33 +1348,35 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
         bool visited = n.State == MapPointState.Traveled;
         bool dead = IsDead(n); // unreachable & never visited
         bool travelEnabled = _model?.TravelEnabled ?? false;
-        // The current node reads as "done" only once you've finished it and can move on; before
-        // that your task is still HERE. Start is a landmark and stays full.
-        bool doneCurrent = isCurrent && travelEnabled;
-        bool visitedPast = visited && !isCurrent && !isStart;
-        bool dimAsDone = visitedPast || doneCurrent;
         bool frontier = n.State == MapPointState.Travelable && travelEnabled;
 
+        // VANILLA'S TINT TABLE (NMapPoint.TargetColor — adopted 2026-08-01): the trail
+        // (Traveled, incl. the current node) and the next-step nodes (Travelable) carry the
+        // FULL natural art; every other unvisited room sits at half alpha
+        // (StsColors.halfTransparentWhite). The ink circle alone says "past"; the marker alone
+        // says "you are here". Our ghost layer then pushes unreachable-and-unvisited rooms
+        // further down AND removes their rim — no colour where no further decision will ever
+        // be made (directive 2026-08-01).
         Color bright = BrightFor(n.EffType);
         Color? rim;
         bool thickRim = false;
-        var iconTint = new Color(1, 1, 1, 1);
+        Color iconTint;
         if (dead)
         {
             rim = null; // ghosts lose the rim entirely
             iconTint = new Color(0.45f, 0.45f, 0.50f, 0.35f);
         }
-        else if (dimAsDone)
+        else if (visited || n.State == MapPointState.Travelable)
         {
-            // Visited = clearly the SAME colour/rim/art as the live nodes, just a bit dimmer
-            // (2026-07-30) — the trail's position already says "past".
-            rim = bright.Darkened(0.18f);
-            iconTint = new Color(0.92f, 0.92f, 0.92f, 0.80f);
+            rim = bright;
+            thickRim = !visited; // "expand the coloured area slightly" applies to live rooms
+            iconTint = new Color(1, 1, 1, 1);
         }
         else
         {
             rim = bright;
             thickRim = true;
+            iconTint = new Color(1f, 1f, 1f, 0.5f); // vanilla's halfTransparentWhite
         }
 
         // The boss badge's outline is already massive — a thickened rim turns it into a rough
@@ -1361,41 +1394,48 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
             iconTint = new Color(inkArt.R, inkArt.G, inkArt.B, 1f);
         }
 
-        // MOTION. Continuous pulse for the travelable frontier and for the
-        // legend-hovered type; a hover swell (fast in, gradual out — animated by the page tick)
-        // that dominates while the mouse is on the node. Vanilla's travelable-point pulse is
-        // exactly sin(elapsed * 4) * 0.25 + 1.2, with an independent starting phase per node.
-        // Visual only: hitboxes stay at rr.
+        // MOTION — vanilla's, exactly (2026-08-01). Frontier nodes pulse on the game's own
+        // curve, sin(elapsed*4)*0.25+1.2 (the start pulses gently at ±0.05 around 1, like
+        // NAncientMapPoint); the hover swell rises to vanilla's 1.45x in 0.05s and releases
+        // over 0.5s (driven by the page tick), dominating the pulse while held; a pressed
+        // travelable node squashes to vanilla's 0.9x. Visual only: hitboxes stay at rr.
         float swell = 1f;
-        if (frontier || (_legendHighlight is MapPointType hl && n.EffType == hl))
-        {
-            float t = Time.GetTicksMsec() / 1000f;
-            swell = Mathf.Sin(t * 4f + PulsePhase(n.Coord)) * 0.25f + 1.2f;
-        }
-        float hover = _hoverAnim.GetValueOrDefault(n.Coord); // 0..1
-        swell = Mathf.Max(swell, 1f + 0.20f * hover);
-        float vr = rr * swell;
-
-        // THE TAKEN PATH — vanilla's hand-painted ink circle (NMapCircleVfx's settled frame,
-        // map_circle_4), stamped around every room you actually visited, with vanilla's own
-        // per-node deterministic rotation + slight scale jitter so the trail looks hand-drawn.
-        if (visited && !isStart)
-            DrawInkCircle(p, vr, n.Coord);
-
-        DrawNodeShape(font, p, vr, n.EffType, n.Icon, n.Outline, rim, thickRim, iconTint);
-
-        // EVERY node available as the next step has a permanent white border. The border follows
-        // the node's native-rate pulse, so both the icon and its selection cue move as one.
         if (frontier)
         {
-            DrawArc(p, vr + 3f, 0f, Mathf.Tau, 44, WithA(Ink(1f), 0.35f), 4.5f, true);
-            DrawArc(p, vr + 3f, 0f, Mathf.Tau, 44, new Color(1f, 1f, 0.97f, 1f), 3f, true);
+            float t = Time.GetTicksMsec() / 1000f;
+            swell = isStart
+                ? Mathf.Sin(t * 4f + PhaseOf(n.Coord)) * 0.05f + 1f
+                : Mathf.Sin(t * 4f + PhaseOf(n.Coord)) * 0.25f + 1.2f;
         }
+        float hover = _hoverAnim.GetValueOrDefault(n.Coord); // 0..1
+        swell = Mathf.Max(swell, 1f + 0.45f * hover);        // vanilla HoverScale = 1.45
+        if (_pressed is MapCoord pc && pc.col == n.Coord.col && pc.row == n.Coord.row)
+            swell = 0.9f;                                     // vanilla DownScale = 0.9
+        float vr = rr * swell;
+
+        // Hovering a TRAVELABLE node flashes its outline white — vanilla's _outlineColor
+        // (white, 0.75) — layered on our coloured rim exactly where vanilla layers it on the
+        // bg-coloured outline.
+        if (frontier && hover > 0f && rim is Color rc)
+            rim = rc.Lerp(new Color(1f, 1f, 1f), hover * 0.75f);
+
+        // THE TAKEN PATH — vanilla's ensō brush (NMapCircleVfx / map_circle_4). Drawn BEFORE
+        // the icon so the room type stays visible inside the hollow swirl; sized from the
+        // BASE radius (not the hover swell) so the circle stays put while the icon pulses.
+        if (visited && !isStart)
+            DrawInkCircle(p, rr, n.Coord);
+
+        DrawNodeShape(font, p, vr, n.EffType, n.Icon, n.Outline, rim, thickRim, iconTint);
 
         // The one fixed cue: the game's red "you are here" marker arrow.
         if (isCurrent)
             DrawCurrentMarker(p, vr);
     }
+
+    // A node's pulse phase: the stable per-coord phase, unless an unfocus reset (vanilla's
+    // _elapsedTime = 5π/4) has stamped a replacement.
+    private float PhaseOf(MapCoord coord) =>
+        _pulsePhase.TryGetValue(coord, out float p) ? p : PulsePhase(coord);
 
     private static Color WithA(Color c, float a) => new(c.R, c.G, c.B, a);
 
@@ -1408,39 +1448,44 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
         return (h / (float)uint.MaxValue) * Mathf.Tau;
     }
 
-    // Vanilla's Japanese ensō-style brush circle/chevron. The Vfx flipbook plays map_circle_0..3
-    // and settles on map_circle_4 — the settled frame the classic map leaves on every visited node.
+    // Vanilla's Japanese ensō brush (NMapCircleVfx). Scene facts from map_circle_vfx.tscn:
+    //   - Control is 200×200; TextureRect fills it; runtime Scale is 0.85..0.90 → ~170–180px
+    //   - TextureRect.modulate = Color(0.141, 0.122, 0.102) — FIXED dark ink (not PathTraveled)
+    //   - Atlas frames are WHITE silhouettes; the scene modulate is what makes them ink-brown
+    //   - Normal map icon is 92×92, so the swirl is ~1.9× the icon — larger, hollow center
+    // Drawing the icon ON TOP (caller) keeps the past room type readable inside the swirl.
     private static Texture2D? _inkCircle;
+    // Exact TextureRect modulate from map_circle_vfx.tscn (RGB); alpha applied at draw time.
+    private static readonly Color InkCircleTint = new(0.141176f, 0.121569f, 0.101961f);
 
-    private void DrawInkCircle(Vector2 p, float vr, MapCoord coord)
+    private void DrawInkCircle(Vector2 p, float baseRadius, MapCoord coord)
     {
+        Color ink = new(InkCircleTint.R, InkCircleTint.G, InkCircleTint.B, 0.95f);
         _inkCircle ??= MiniMapController.LoadTexture(
             "res://images/atlases/compressed.sprites/map/map_circle_4.tres");
+        // Icon draw diameter is baseRadius * 2.05; vanilla circle/icon ≈ 200/92 ≈ 2.17, then
+        // the scene's 0.85..0.90 scale jitter. Match that so the brush sits clearly outside.
+        float iconD = baseRadius * 2.05f;
+        int h = coord.row * 131 + coord.col * 977;
+        float rot = (h % 360) * (Mathf.Tau / 360f);
+        float sc = 0.85f + 0.05f * ((h % 97) / 97f); // vanilla NextFloat(0.85, 0.90)
+        float d = iconD * (200f / 92f) * sc;
         if (_inkCircle == null || !GodotObject.IsInstanceValid(_inkCircle))
         {
-            // The native texture is mandatory on the supported game build. Keep the taken path
-            // legible even on an incompatible asset pack: an open brush circle plus terminal
-            // chevron preserves the same visual meaning instead of silently drawing nothing.
-            float r = vr * 1.18f;
-            Color ink = _model?.PathTraveled ?? Ink(0.95f);
-            DrawArc(p, r, 0.35f, Mathf.Tau - 0.35f, 40, WithA(ink, 0.95f), 3.5f, true);
+            // Fallback if the texture is missing: open brush arc + chevron in the same ink.
+            float r = d * 0.5f;
+            DrawArc(p, r, 0.35f, Mathf.Tau - 0.35f, 40, ink, 3.5f, true);
             Vector2 tip = p + new Vector2(r, -r * 0.18f);
             DrawPolyline(new[]
             {
                 tip + new Vector2(-5f, -4f),
                 tip,
                 tip + new Vector2(-5f, 4f),
-            }, WithA(ink, 0.95f), 3.5f, true);
+            }, ink, 3.5f, true);
             return;
         }
-        // Deterministic per-node "randomness", like vanilla's coord-seeded Rng: a full-turn
-        // rotation and the 0.85..0.90 scale jitter, stable across redraws.
-        int h = coord.row * 131 + coord.col * 977;
-        float rot = (h % 360) * (Mathf.Tau / 360f);
-        float sc = 0.85f + 0.05f * ((h % 97) / 97f);
-        float d = vr * 2.05f * 1.30f * sc; // wraps the icon with the stroke riding just outside
         DrawSetTransform(p, rot, Vector2.One);
-        DrawTextureRect(_inkCircle, new Rect2(-d * 0.5f, -d * 0.5f, d, d), false, new Color(1, 1, 1, 0.95f));
+        DrawTextureRect(_inkCircle, new Rect2(-d * 0.5f, -d * 0.5f, d, d), false, ink);
         DrawSetTransform(Vector2.Zero, 0f, Vector2.One);
     }
 
@@ -1537,10 +1582,10 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
         MapPointType.Monster => new Color(0.85f, 0.30f, 0.28f),  // red
         MapPointType.Elite => new Color(0.72f, 0.28f, 0.80f),    // purple
         MapPointType.Boss => new Color(0.85f, 0.20f, 0.22f),     // red (real boss art drawn on top when available)
-        MapPointType.Shop => new Color(0.95f, 0.82f, 0.30f),     // yellow (store)
+        MapPointType.Shop => new Color(1.00f, 0.84f, 0.00f),     // pure gold (store, 2026-08-01)
         MapPointType.RestSite => new Color(0.35f, 0.75f, 0.42f), // green (camp)
         MapPointType.Treasure => new Color(0.95f, 0.55f, 0.18f), // orange (treasure box)
-        MapPointType.Unknown => new Color(0.60f, 0.62f, 0.68f),  // grey (?)
+        MapPointType.Unknown => new Color(0.60f, 0.80f, 1.00f),  // light blue (?, 2026-08-01)
         MapPointType.Ancient => new Color(0.25f, 0.78f, 0.74f),  // teal (start)
         _ => new Color(0.40f, 0.42f, 0.48f),
     };

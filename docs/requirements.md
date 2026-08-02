@@ -6,7 +6,9 @@ Living record of everything this mod is meant to do, gathered across development
 
 DeckView is a Slay the Spire 2 (Godot + C# + Harmony) mod with two features: **mini-cards** (deck
 views) and an **alternate map view**. Companion docs: `screen-system.md` (capstone/screen internals),
-`DEVELOPMENT.md` (build + decompile). Cross-cutting policies in "Invariants" below are mandatory.
+`DEVELOPMENT.md` (build + decompile), `vanilla-parity.md` (the complete flat-map ↔ vanilla-map
+gap accounting and plan — including corrections to vanilla claims made below).
+Cross-cutting policies in "Invariants" below are mandatory.
 
 ---
 

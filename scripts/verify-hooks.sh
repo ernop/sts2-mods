@@ -24,6 +24,15 @@ if [ ! -x "$ILSPY" ]; then
     printf 'ilspycmd not found at %s; set ILSPY to its executable path\n' "$ILSPY" >&2
     exit 2
 fi
+# rg is not installed in every WSL distro; fall back to grep (same -m1/-w semantics here).
+if command -v rg >/dev/null 2>&1; then
+    SEARCH() { rg -m1 -w "$1" "$2" 2>/dev/null; }
+    SEARCH_Q() { rg -q "$1" "$2" 2>/dev/null; }
+else
+    SEARCH() { grep -m1 -w -E "$1" "$2" 2>/dev/null; }
+    SEARCH_Q() { grep -q -E "$1" "$2" 2>/dev/null; }
+fi
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 fail=0
@@ -92,7 +101,7 @@ for line in $CHECKS; do
         printf 'FAIL  %-55s (type did not decompile)\n' "$type"
         fail=1; continue
     fi
-    hit="$(rg -m1 -w "$member" "$f" 2>/dev/null | sed 's/^[[:space:]]*//')"
+    hit="$(SEARCH "$member" "$f" | sed 's/^[[:space:]]*//')"
     if [ -n "$hit" ]; then
         printf 'PASS  %-40s %-26s | %s\n' "${type##*.}" "$member" "$hit"
     else
@@ -104,7 +113,7 @@ done
 # NGridCardHolder must NOT override SmallScale (our SmallScale patch targets base NCardHolder).
 gf="$TMP/MegaCrit.Sts2.Core.Nodes.Cards.Holders.NGridCardHolder.cs"
 decompile "MegaCrit.Sts2.Core.Nodes.Cards.Holders.NGridCardHolder"
-if rg -q "override .*\\bSmallScale\\b" "$gf" 2>/dev/null; then
+if SEARCH_Q "override .*\\bSmallScale\\b" "$gf"; then
     printf 'FAIL  %-40s %-26s | NGridCardHolder OVERRIDES SmallScale (patch would miss it)\n' "NGridCardHolder" "!SmallScale-override"
     fail=1
 else

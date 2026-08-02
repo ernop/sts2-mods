@@ -14,3 +14,14 @@ dist/
 
 # generated map-layout evaluation renders
 layout/mapviz/
+
+# Downloaded tooling (Mega Crit ModUploader etc.)
+tools/
+mod-uploader.log
+
+# Workshop workspaces: keep workshop.json + mod_id.txt versioned, ignore the
+# copied build artifacts and the uploader's template files.
+workshop/*-workshop/content/
+workshop/*-workshop/image.png
+workshop/*-workshop/README.md
+workshop/*-workshop/previews/
