@@ -17,6 +17,9 @@ internal static class FlatMapConfig
     // Compress defaults OFF (2026-07-28): with the vertical one-screen layout, the raw game
     // columns are the most vanilla-faithful view. The choice persists for the user's lifetime.
     private static bool _compressMap;
+    // Ghosting unreachable-and-unvisited rooms defaults OFF (2026-08-02): vanilla has no
+    // reachability concept, so new users see every room at the vanilla tint until they opt in.
+    private static bool _hideUnreachable;
     private static bool _dumpMapGraph;
 
     internal static bool PreferFlatMap
@@ -39,6 +42,18 @@ internal static class FlatMapConfig
             EnsureLoaded();
             if (_compressMap == value) return;
             _compressMap = value;
+            Save();
+        }
+    }
+
+    internal static bool HideUnreachable
+    {
+        get { EnsureLoaded(); return _hideUnreachable; }
+        set
+        {
+            EnsureLoaded();
+            if (_hideUnreachable == value) return;
+            _hideUnreachable = value;
             Save();
         }
     }
@@ -77,6 +92,7 @@ internal static class FlatMapConfig
 
         _preferFlatMap = cfg.GetValue("map", "flat", false).AsBool();
         _compressMap = cfg.GetValue("map", "compress", false).AsBool();
+        _hideUnreachable = cfg.GetValue("map", "hide_unreachable", false).AsBool();
         _dumpMapGraph = cfg.GetValue("debug", "dump_map_graph", false).AsBool();
     }
 
@@ -94,6 +110,7 @@ internal static class FlatMapConfig
         }
         cfg.SetValue("map", "flat", _preferFlatMap);
         cfg.SetValue("map", "compress", _compressMap);
+        cfg.SetValue("map", "hide_unreachable", _hideUnreachable);
         Error result = cfg.Save(Path);
         if (result != Error.Ok)
             Log.Info($"[FlatMap] WARNING: could not save preferences ({result})");

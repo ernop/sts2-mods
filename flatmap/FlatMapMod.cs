@@ -39,8 +39,8 @@ public static class FlatMapMod
 
 
     // M is the ONE global map shortcut: from anywhere, it toggles the map's visibility. When it
-    // opens the map, the map shows in whatever state the two checkboxes ("Flat map" / "Compress")
-    // are configured to. M = "map".
+    // opens the map, the map shows in whatever state the checkboxes ("Flat map" / "Compress" /
+    // "Hide unreachable nodes") are configured to. M = "map".
     public const Key MapKey = Key.M;
 
     // FlatMap was built and tested against this game version. On another build, every private
@@ -706,10 +706,10 @@ internal static class MapStyleToggle
     private static readonly List<ToggleSwitch> _boxes = new();
 
     // Shared placement for the "Flat map" row in BOTH renderings. On the classic page the
-    // Compress row is absent, but its measured row height remains reserved so this control does
-    // not jump when the user switches map styles.
-    internal static Vector2 FlatMapPosition(Vector2 viewport, float flatHeight, float compressHeight) =>
-        new(8f, viewport.Y - 16f - compressHeight - 2f - flatHeight);
+    // Compress and Hide-unreachable rows are absent, but their measured row heights remain
+    // reserved so this control does not jump when the user switches map styles.
+    internal static Vector2 FlatMapPosition(Vector2 viewport, float flatHeight, float rowHeight) =>
+        new(8f, viewport.Y - 16f - 2f * (rowHeight + 2f) - flatHeight);
 
     internal static ToggleSwitch Create()
     {
@@ -809,6 +809,7 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
     private bool _compress = true;               // compressed layout vs raw 1:1 with game columns
     private readonly ToggleSwitch _styleToggle;  // "Flat map" (on for this page)
     private readonly ToggleSwitch _compressToggle; // "Compress" (on = flattened; off = raw 1:1)
+    private readonly ToggleSwitch _hideUnreachableToggle; // "Hide unreachable nodes" (ghosting opt-in)
 
     // --- ICapstoneScreen ---
     public NetScreenType ScreenType => NetScreenType.Map;
@@ -823,10 +824,14 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
         Connect(Control.SignalName.GuiInput, Callable.From<InputEvent>(OnGuiInput));
         _styleToggle = MapStyleToggle.Create();
         _compressToggle = new ToggleSwitch("Compress", FlatMapConfig.CompressMap, OnCompressToggled) { ZIndex = 60 };
+        _hideUnreachableToggle = new ToggleSwitch(
+            "Hide unreachable nodes", FlatMapConfig.HideUnreachable, OnHideUnreachableToggled) { ZIndex = 60 };
         AddChild(_styleToggle);
         AddChild(_compressToggle);
+        AddChild(_hideUnreachableToggle);
         _styleToggle.Connect(Control.SignalName.FocusEntered, Callable.From(ClearNodeFocus));
         _compressToggle.Connect(Control.SignalName.FocusEntered, Callable.From(ClearNodeFocus));
+        _hideUnreachableToggle.Connect(Control.SignalName.FocusEntered, Callable.From(ClearNodeFocus));
     }
 
     // Which lane to draw a node at: compressed (flattened) or the raw game column (1:1 view).
@@ -863,6 +868,14 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
         QueueRedraw();
     }
 
+    // Ghosting is draw-time only (IsDead is the single gate), so a flip just needs a redraw:
+    // node positions, hitboxes, and the travelable focus controls are all unaffected.
+    private void OnHideUnreachableToggled(bool on)
+    {
+        FlatMapConfig.HideUnreachable = on;
+        QueueRedraw();
+    }
+
     // Set the level to draw + viewport size + travel callback (called just before the page opens).
     internal void Configure(MiniMapModel model, Vector2 viewport, Action<MapCoord> onTravel)
     {
@@ -880,15 +893,21 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
         Size = viewport; // capstone fills the screen; the game's top bar renders above us
         _styleToggle.SetOn(FlatMapConfig.PreferFlatMap);
         _compressToggle.SetOn(_compress);
+        _hideUnreachableToggle.SetOn(FlatMapConfig.HideUnreachable);
         // Toggles bottom-left: one tight column, FULLY left-aligned (hard against the screen edge)
         // and FLUSH to the bottom — each checkbox exactly one line below the previous (measured
-        // heights, no blank lines), stacked upward from the bottom edge.
+        // heights, no blank lines), stacked upward from the bottom edge:
+        // Flat map / Compress / Hide unreachable nodes.
         _styleToggle.Position = MapStyleToggle.FlatMapPosition(
             viewport, _styleToggle.Size.Y, _compressToggle.Size.Y);
         _compressToggle.Position = new Vector2(
             _styleToggle.Position.X, _styleToggle.Position.Y + _styleToggle.Size.Y + 2f);
+        _hideUnreachableToggle.Position = new Vector2(
+            _compressToggle.Position.X, _compressToggle.Position.Y + _compressToggle.Size.Y + 2f);
         _styleToggle.FocusNeighborBottom = _styleToggle.GetPathTo(_compressToggle);
         _compressToggle.FocusNeighborTop = _compressToggle.GetPathTo(_styleToggle);
+        _compressToggle.FocusNeighborBottom = _compressToggle.GetPathTo(_hideUnreachableToggle);
+        _hideUnreachableToggle.FocusNeighborTop = _hideUnreachableToggle.GetPathTo(_compressToggle);
         UpdateLayoutPositions();
         RebuildNodeFocusControls();
         if (restoreNodeFocus && restoreCoord is MapCoord target
@@ -1129,6 +1148,7 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
             leftmost.FocusNeighborLeft = leftmost.GetPathTo(_styleToggle);
             _styleToggle.FocusNeighborRight = _styleToggle.GetPathTo(leftmost);
             _compressToggle.FocusNeighborRight = _compressToggle.GetPathTo(leftmost);
+            _hideUnreachableToggle.FocusNeighborRight = _hideUnreachableToggle.GetPathTo(leftmost);
         }
     }
 
@@ -1313,7 +1333,11 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
     }
 
     // A room is "dead" when you can no longer reach it AND you never visited it — those get greyed.
-    private static bool IsDead(MiniNode n) => n.State != MapPointState.Traveled && !n.Reachable;
+    // THE single gate for the whole ghosting feature (node tint, rim removal, edge fade, legend
+    // swell): with "Hide unreachable nodes" off (the default), nothing is ever dead and every
+    // room renders at the vanilla tint.
+    private static bool IsDead(MiniNode n) =>
+        FlatMapConfig.HideUnreachable && n.State != MapPointState.Traveled && !n.Reachable;
 
     // --- THE LOOK (decided 2026-08-01; see docs/vanilla-parity.md §2/§3) ----------------------
     // Vanilla-exact in every dynamic behavior — the tint table (NMapPoint.TargetColor), the
@@ -1322,7 +1346,8 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
     // on top:
     //   1. the type-coloured rim: the icon's main body drawn in a bright recognizability colour
     //      where vanilla carves it in the (invisible) map-bg colour, and
-    //   2. unreachable-and-unvisited rooms ghosted (vanilla has no reachability concept), their
+    //   2. OPT-IN (the "Hide unreachable nodes" checkbox, off by default, 2026-08-02):
+    //      unreachable-and-unvisited rooms ghosted (vanilla has no reachability concept), their
     //      rims removed — no colour where no further decision will ever be made.
     // The only fixed cue is the red "you are here" marker arrow.
 

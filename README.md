@@ -41,11 +41,13 @@ page (its own top bar, ESC/back, controller routing).
   the vanilla map's rate (relic-aware incl. Wing Boots); hovering a legend row makes every room
   of that type pulse. Your spot is marked by the game's own "you are here"
   arrow; your past route keeps its colours slightly dimmed (a visited `?` adopts the room it
-  turned out to be) and vanilla ink-circle marks; rooms you can no longer reach are faint ghosts.
+  turned out to be) and vanilla ink-circle marks; optionally, rooms you can no longer reach fade
+  to faint ghosts (the **Hide unreachable nodes** checkbox, off by default).
   Click a pulsing room to travel via the game's own selection path.
-- **Two checkboxes** (bottom-left, saved across runs): **Flat map** (flat vs. classic rendering)
-  and **Compress** (off by default — raw 1:1 with the game's columns; on = our lane-compression,
-  which provably changes nothing but spacing).
+- **Three checkboxes** (bottom-left, saved across runs): **Flat map** (flat vs. classic
+  rendering), **Compress** (off by default — raw 1:1 with the game's columns; on = our
+  lane-compression, which provably changes nothing but spacing), and **Hide unreachable nodes**
+  (off by default — on = rooms you can no longer reach fade to ghosts).
 - **Standard controls always work:** the top-bar map button, the map room, and **M** all toggle
   the map in either mode; **F** instantly flips flat↔classic while a map is up (two display
   styles of one map — never stacked); ESC/back leaves the map.
