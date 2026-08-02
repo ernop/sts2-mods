@@ -1,8 +1,8 @@
 ﻿{
-  "title": "FlatMap — Whole-Act Map on One Screen",
+  "title": "One-Page Map — Whole Act on One Screen",
   "description": "A clearer, optional whole-act map view: the vanilla map's own vertical layout, compressed so every node of the act fits on one screen — same rooms, same connections, same art style.\n\nYour current spot, legal next moves, past route, and unreachable rooms are all called out, with the game's own legend, icons, dashed footpaths, and per-act colours. Hover swells rooms, legal destinations pulse at the vanilla rate, and clicking a pulsing room travels via the game's own selection path.\n\nVisibility only: FlatMap does not change cards, routes, travel rules, combat, rewards, saves, or any other gameplay.\n\nControls: M toggles the map, F flips flat/classic while a map is up, ESC/back leaves. Two on-map checkboxes (Flat map, Compress) persist across runs. Mouse, keyboard, and controller supported.\n\nTargets STS2 v0.110.1.",
   "visibility": "private",
-  "changeNote": "Initial Workshop release: FlatMap 0.2.0 for Slay the Spire 2 v0.110.1.",
+  "changeNote": "Renamed to One-Page Map (formerly FlatMap). Same mod, same id, 0.2.0 for STS2 v0.110.1.",
   "tags": ["UI", "Quality of Life"],
   "dependencies": [],
   "contentDescriptors": []

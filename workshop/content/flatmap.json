@@ -1,6 +1,6 @@
 {
   "id": "flatmap",
-  "name": "FlatMap",
+  "name": "One-Page Map",
   "author": "ernes",
   "description": "Adds a clearer, optional whole-act map view for Slay the Spire 2. The flat map is the game's own vertical map compressed to fit every node of the act on one screen — same rooms, same connections, same art style — with your current spot, legal next moves, past route, and unreachable rooms all called out, plus the game's legend. It changes visibility and UI layout only—it does not change cards, routes, travel rules, combat, rewards, saves, or any other gameplay. Press M for the map and F to switch map styles; checkboxes on the map configure the view. Targets Slay the Spire 2 v0.110.1.",
   "version": "0.2.0",
