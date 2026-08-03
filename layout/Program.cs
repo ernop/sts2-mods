@@ -45,11 +45,13 @@ internal static class Runner
     {
         if (args.Length > 0 && args[0] == "viz") { CompressionAnalysis(); return 0; }
         if (args.Length > 0 && args[0] == "viz-json") { EmitOptionsJson(); return 0; }
+        if (args.Length > 0 && args[0] == "fan") { FanAnalysis(); return 0; }
 
         Console.WriteLine("=== FlatMap map-layout tests ===\n");
         CuratedCases();
         SafetyNetTest();
         ExteriorSpikeMetricTest();
+        FanPreservationTest(seedCount: 300);
         PropertyTests(seedCount: 500);
 
         Console.WriteLine();
@@ -226,6 +228,134 @@ internal static class Runner
             else type[(n.Row, n.Col)] = pool[rng.Next(pool.Length)];
         }
         return type;
+    }
+
+    // ---- fan-direction analysis ------------------------------------------------------------
+    // Question under investigation: does compression preserve the DIRECTION SIGNATURE of the
+    // start fan-out (and boss converge-in)? For the single extreme node s and each neighbor c,
+    // baseline direction = sign(col(c)-col(s)) in {\, |, /}. After lane assignment it is
+    // sign(lane(c)-lane(s)). A violation = some baseline direction class has no representative
+    // after layout (e.g. "\|/" became "\\|" — nothing goes rightish any more).
+    private static (string before, string after, bool violated) FanSignature(LGraph g, int[] lane, bool start)
+    {
+        int r = start ? 0 : g.RowCount - 1;
+        if (g.RowsOrdered[r].Length != 1) return ("", "", false);
+        int s = g.RowsOrdered[r][0];
+        int[] kids = g.NeighborsOf[s];
+        HashSet<int> Signs(Func<int, int> pos) => kids.Select(k => Math.Sign(pos(k) - pos(s))).ToHashSet();
+        string Show(HashSet<int> set) => string.Concat(new[] { -1, 0, 1 }
+            .Where(set.Contains).Select(x => x < 0 ? '\\' : x > 0 ? '/' : '|'));
+        HashSet<int> b = Signs(id => g.Nodes[id].Col), a = Signs(id => lane[id]);
+        return (Show(b), Show(a), !b.IsSubsetOf(a));
+    }
+
+    // Could the violation be fixed by moving ONLY the extreme node s (children untouched)? True
+    // iff some integer lane L — within the existing lane range, matching PinEnd's never-grow-the-
+    // map contract — reproduces every baseline sign class against the kids' lanes.
+    private static bool FixableByEndAlone(LGraph g, int[] lane, bool start)
+    {
+        int r = start ? 0 : g.RowCount - 1;
+        int s = g.RowsOrdered[r][0];
+        int[] kids = g.NeighborsOf[s];
+        var baseSigns = kids.Select(k => Math.Sign(g.Nodes[k].Col - g.Nodes[s].Col)).ToHashSet();
+        for (int L = lane.Min(); L <= lane.Max(); L++)
+        {
+            var now = kids.Select(k => Math.Sign(lane[k] - L)).ToHashSet();
+            if (baseSigns.IsSubsetOf(now)) return true;
+        }
+        return false;
+    }
+
+    // Hard gates for the fan-direction rule (see MapLayout.PinEnd):
+    //   1. NO FLIPS, ever — a fan edge that went leftish in the raw columns must never render
+    //      rightish of the start/boss (or vice versa). Always satisfiable because within-row
+    //      order preservation keeps left-group kids below right-group kids.
+    //   2. NO AVOIDABLE CLASS LOSS — a baseline direction class may only disappear when the
+    //      children's lanes make it geometrically unpreservable (a "\/" collapsed to adjacent
+    //      lanes with no straight child; ~1.6% of random maps, rendered as the least-bad "\|").
+    private static void FanPreservationTest(int seedCount)
+    {
+        Console.WriteLine($"-- fan-direction preservation ({seedCount} random maps with start/boss) --");
+        int flips = 0, avoidableLosses = 0, unavoidable = 0;
+        for (int seed = 0; seed < seedCount; seed++)
+        {
+            LGraph g = RandomStsMapWithEnds(new Random(seed));
+            int[] lane = MapLayout.AssignLanes(g);
+            foreach (bool start in new[] { true, false })
+            {
+                int r = start ? 0 : g.RowCount - 1;
+                if (g.RowsOrdered[r].Length != 1) continue;
+                int s = g.RowsOrdered[r][0];
+                foreach (int k in g.NeighborsOf[s])
+                {
+                    int b = Math.Sign(g.Nodes[k].Col - g.Nodes[s].Col);
+                    if (b != 0 && Math.Sign(lane[k] - lane[s]) == -b) flips++;
+                }
+                (_, _, bool bad) = FanSignature(g, lane, start);
+                if (!bad) continue;
+                if (FixableByEndAlone(g, lane, start)) avoidableLosses++; else unavoidable++;
+            }
+        }
+        Console.WriteLine($"  flipped fan edges: {flips}   avoidable class losses: {avoidableLosses}   " +
+                          $"unavoidable (adjacent-lane \\/, rendered as \\| ): {unavoidable}");
+        Expect(flips == 0, $"{flips} fan edges rendered on the WRONG side of the start/boss");
+        Expect(avoidableLosses == 0, $"{avoidableLosses} fan direction classes lost though preservable");
+    }
+
+    private static void FanAnalysis()
+    {
+        Console.WriteLine("=== FAN-DIRECTION ANALYSIS (start fan-out / boss converge-in) ===");
+        int maps = 0, startViol = 0, bossViol = 0, unfixable = 0, shown = 0;
+        void Check(string name, LGraph g)
+        {
+            maps++;
+            int[] lane = MapLayout.AssignLanes(g);
+            foreach (bool start in new[] { true, false })
+            {
+                (string before, string after, bool bad) = FanSignature(g, lane, start);
+                if (!bad) continue;
+                if (start) startViol++; else bossViol++;
+                bool fixable = FixableByEndAlone(g, lane, start);
+                if (!fixable) unfixable++;
+                if (shown < 5)
+                {
+                    shown++;
+                    Console.WriteLine($"\n### {name} {(start ? "START" : "BOSS")}: \"{before}\" -> \"{after}\"" +
+                                      $"  (fixable by moving the end node alone: {fixable})");
+                    Console.WriteLine(RenderGrid(g, lane));
+                }
+            }
+        }
+
+        Check(CapName, FromDump(CapNodes, CapEdges));
+        for (int seed = 0; seed < 500; seed++)
+            Check($"random-{seed}", RandomStsMapWithEnds(new Random(seed)));
+
+        Console.WriteLine($"\nchecked {maps} maps: START violations {startViol}, BOSS violations {bossViol}, " +
+                          $"of which NOT fixable by moving the end node alone: {unfixable}");
+    }
+
+    // Like RandomStsMap but with a single start (col 3) fanning to every path's first room and a
+    // single boss (col 3) converging from every path's last room — the real game's shape.
+    private static LGraph RandomStsMapWithEnds(Random rng)
+    {
+        const int width = 7;
+        int rows = rng.Next(10, 18);
+        int paths = rng.Next(4, 8);
+        var b = new B();
+        for (int p = 0; p < paths; p++)
+        {
+            int col = rng.Next(0, width);
+            b.E(0, 3, 1, col);
+            for (int r = 1; r < rows; r++)
+            {
+                int next = Math.Clamp(col + rng.Next(-1, 2), 0, width - 1);
+                b.E(r, col, r + 1, next);
+                col = next;
+            }
+            b.E(rows, col, rows + 1, 3);
+        }
+        return b.G();
     }
 
     // ---- fluent graph builder --------------------------------------------------------------

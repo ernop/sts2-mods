@@ -1335,18 +1335,19 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
     // A room is "dead" when you can no longer reach it AND you never visited it — those get greyed.
     // THE single gate for the whole ghosting feature (node tint, rim removal, edge fade, legend
     // swell): with "Hide unreachable nodes" off (the default), nothing is ever dead and every
-    // room renders at the vanilla tint.
+    // room renders in the standard opaque style.
     private static bool IsDead(MiniNode n) =>
         FlatMapConfig.HideUnreachable && n.State != MapPointState.Traveled && !n.Reachable;
 
-    // --- THE LOOK (decided 2026-08-01; see docs/vanilla-parity.md §2/§3) ----------------------
-    // Vanilla-exact in every dynamic behavior — the tint table (NMapPoint.TargetColor), the
-    // frontier pulse, the 1.45x hover swell, the 0.9x press squash, the white outline flash on
-    // travelable hover, the legend-row held swell — with exactly TWO colour divergences layered
-    // on top:
-    //   1. the type-coloured rim: the icon's main body drawn in a bright recognizability colour
-    //      where vanilla carves it in the (invisible) map-bg colour, and
-    //   2. OPT-IN (the "Hide unreachable nodes" checkbox, off by default, 2026-08-02):
+    // --- THE LOOK (rev 2026-08-02; see docs/vanilla-parity.md §2/§3) ---------------------------
+    // Vanilla-exact in every dynamic behavior — the frontier pulse, the 1.45x hover swell, the
+    // 0.9x press squash, the legend-row held swell — with these colour divergences layered on top:
+    //   1. NO BLEEDTHROUGH (2026-08-02, supersedes vanilla's halfTransparentWhite tint table):
+    //      every room's icon body is the full opaque dark art. Future rooms carry their type
+    //      colour ONLY as a thick surrounding band; visited rooms a thin rim + ink circle.
+    //   2. Frontier rooms are vanilla's own: full art, pulsing, with a WHITE border that grows
+    //      thicker while hovered (our restyling of vanilla's white outline flash).
+    //   3. OPT-IN (the "Hide unreachable nodes" checkbox, off by default, 2026-08-02):
     //      unreachable-and-unvisited rooms ghosted (vanilla has no reachability concept), their
     //      rims removed — no colour where no further decision will ever be made.
     // The only fixed cue is the red "you are here" marker arrow.
@@ -1375,33 +1376,36 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
         bool travelEnabled = _model?.TravelEnabled ?? false;
         bool frontier = n.State == MapPointState.Travelable && travelEnabled;
 
-        // VANILLA'S TINT TABLE (NMapPoint.TargetColor — adopted 2026-08-01): the trail
-        // (Traveled, incl. the current node) and the next-step nodes (Travelable) carry the
-        // FULL natural art; every other unvisited room sits at half alpha
-        // (StsColors.halfTransparentWhite). The ink circle alone says "past"; the marker alone
-        // says "you are here". Our ghost layer then pushes unreachable-and-unvisited rooms
-        // further down AND removes their rim — no colour where no further decision will ever
-        // be made (directive 2026-08-01).
+        // THE TINT TABLE (directive 2026-08-02, supersedes vanilla halfTransparentWhite): EVERY
+        // room's icon body is the full opaque dark art — no translucent "bleedthrough" imagery
+        // anywhere. The states differ only in their surround:
+        //   - frontier (travelable, travel enabled): vanilla's own system — a WHITE border,
+        //     pulsing, border thickens while hovered (below);
+        //   - visited: thin type-coloured rim + the ensō ink circle;
+        //   - every other unvisited room: the type colour lives ONLY in the THICK surrounding
+        //     band (the strong dark body of a visited room, wearing a coloured ring);
+        //   - ghosts (opt-in): faint rimless grey — the one intentionally translucent state.
         Color bright = BrightFor(n.EffType);
         Color? rim;
         bool thickRim = false;
-        Color iconTint;
+        Color iconTint = new(1, 1, 1, 1);
         if (dead)
         {
             rim = null; // ghosts lose the rim entirely
             iconTint = new Color(0.45f, 0.45f, 0.50f, 0.35f);
         }
-        else if (visited || n.State == MapPointState.Travelable)
+        else if (frontier)
+        {
+            rim = new Color(1f, 1f, 1f); // white border; thickens on hover (vanilla's flash cue)
+        }
+        else if (visited)
         {
             rim = bright;
-            thickRim = !visited; // "expand the coloured area slightly" applies to live rooms
-            iconTint = new Color(1, 1, 1, 1);
         }
         else
         {
             rim = bright;
-            thickRim = true;
-            iconTint = new Color(1f, 1f, 1f, 0.5f); // vanilla's halfTransparentWhite
+            thickRim = true; // the type-colour band — the ONLY coloured element of a future room
         }
 
         // The boss badge's outline is already massive — a thickened rim turns it into a rough
@@ -1438,11 +1442,11 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
             swell = 0.9f;                                     // vanilla DownScale = 0.9
         float vr = rr * swell;
 
-        // Hovering a TRAVELABLE node flashes its outline white — vanilla's _outlineColor
-        // (white, 0.75) — layered on our coloured rim exactly where vanilla layers it on the
-        // bg-coloured outline.
-        if (frontier && hover > 0f && rim is Color rc)
-            rim = rc.Lerp(new Color(1f, 1f, 1f), hover * 0.75f);
+        // Hovering a TRAVELABLE node: vanilla flashes its outline white (_outlineColor, 0.75);
+        // our restyling of that cue (2026-08-02) is the already-white border growing THICKER.
+        // The boss keeps its thin border — its massive badge outline blobs when thickened.
+        if (frontier && hover > 0f && n.EffType != MapPointType.Boss)
+            thickRim = true;
 
         // THE TAKEN PATH — vanilla's ensō brush (NMapCircleVfx / map_circle_4). Drawn BEFORE
         // the icon so the room type stays visible inside the hollow swirl; sized from the

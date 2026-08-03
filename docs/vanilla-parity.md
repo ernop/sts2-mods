@@ -158,6 +158,9 @@ except the added colour boundaries.* Concretely:
 - **Hovering a travelable node flashes its outline white** (`_outlineColor`
   white-0.75) for the hover's duration — layered on our coloured rim exactly where
   vanilla layers it on the bg-coloured outline.
+  **Restyled 2026-08-02 (maintainer)**: the travelable border is now white *at rest*
+  (matching vanilla's system) and the hover cue is that white border growing THICKER,
+  replacing the rim-to-white lerp. Boss stays thin (badge-blob rule, §3.16 note).
 - **Press-down** squashes to 0.9× (0.3 s expo-out) on a travelable node.
 - **Frontier pulse**: vanilla's `sin(t*4)*0.25+1.2` on the icon container (formula
   already matches), including vanilla's rule that a focused/hovered node stops pulsing
@@ -209,6 +212,16 @@ Adopt vanilla's `TargetColor` rules, try in-game and screenshot-judge:
 Retires (supersedes 2026-07-30 directives): visited-slightly-dimmer, and the
 current-node "done vs not-done" dimming — the marker carries "you are here", the ink
 circle carries "done".
+
+**SUPERSEDED 2026-08-02 (maintainer directive — "no bleedthrough")**: the 50 %-alpha
+rule for unvisited rooms is retired. Every room's icon body is now the full opaque
+dark art; state lives entirely in the surround:
+- **future unvisited (non-frontier)** = opaque body + THICK type-colour band (the
+  style travelable rooms previously wore);
+- **frontier (travelable + travel enabled)** = opaque body, WHITE border, vanilla
+  pulse; the border thickens on hover (§3.9 note);
+- **visited** = opaque body + thin type rim + ink circle (unchanged);
+- **ghosts (opt-in)** = the one remaining translucent state (unchanged).
 
 ---
 

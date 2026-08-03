@@ -104,29 +104,66 @@ public static class MapLayout
         return best;
     }
 
-    // Put the start (row 0) and boss (last row) on the SAME lane — the centre line — so the map reads
-    // as entering mid-left and exiting mid-right at one height. Both are single-node rows, so this is
-    // always legal (no same-row neighbour to overlap) and their fan-out/converge edges are already
-    // exempt from the slope rules, so it changes no body metric. Skipped for a multi-node extreme row
-    // (e.g. a two-boss floor) to avoid overlapping them. Re-Compact to drop any lane this emptied.
+    // Place the start (row 0) and boss (last row) near the centre line — the map reads as entering
+    // mid-left and exiting mid-right — but NEVER at the cost of the fan's direction signature (see
+    // PinEnd). Both are single-node rows, so any lane is legal (no same-row neighbour to overlap)
+    // and their fan-out/converge edges are already exempt from the slope rules, so this changes no
+    // body metric. Skipped for a multi-node extreme row (e.g. a two-boss floor) to avoid
+    // overlapping them. Re-Compact to drop any lane this emptied.
     private static void PinEnds(LGraph g, int[] lane)
     {
-        int center = (lane.Min() + lane.Max()) / 2;
         int last = g.RowsOrdered.Length - 1;
-        if (g.RowsOrdered[0].Length == 1) lane[g.RowsOrdered[0][0]] = center;
-        if (last != 0 && g.RowsOrdered[last].Length == 1) lane[g.RowsOrdered[last][0]] = center;
+        if (g.RowsOrdered[0].Length == 1) PinEnd(g, lane, g.RowsOrdered[0][0]);
+        if (last != 0 && g.RowsOrdered[last].Length == 1) PinEnd(g, lane, g.RowsOrdered[last][0]);
         Compact(lane);
     }
 
+    // FAN-DIRECTION RULE (2026-08-02): the raw game columns give each start fan-out edge (and each
+    // boss converge-in edge) a direction — leftish, straight, or rightish of the end node. Every
+    // direction class present in the raw columns must still be represented after compression: a
+    // "\|/" start must never read "//" or "\\|" (the map would feel unbalanced, promising choices
+    // in a direction that doesn't exist or hiding a real spread). So the end node's lane is chosen
+    // to lose as few baseline direction classes as possible (0 whenever the children's lanes allow
+    // an integer strictly between the left and right groups, or level with the straight child),
+    // and only among those to sit nearest the centre line. When full preservation is impossible
+    // (a "\/" whose children collapsed onto adjacent lanes), failures are graded per edge: a
+    // flattened direction ("\" read as "|") costs 1, an outright flip ("\" read as "/") costs 2 —
+    // so the least-bad "\|" / "|/" always beats the unbalanced "\\" / "//".
+    private static void PinEnd(LGraph g, int[] lane, int s)
+    {
+        int min = lane.Min(), max = lane.Max();
+        int center2 = min + max;
+        int[] kids = g.NeighborsOf[s];
+        int bestL = lane[s];
+        (int missing, int graded, int offCenter, int l) bestKey =
+            (int.MaxValue, int.MaxValue, int.MaxValue, int.MaxValue);
+        for (int L = min; L <= max; L++)
+        {
+            int graded = kids.Sum(k =>
+            {
+                int b = LayoutMetrics.FanDir(g, s, k), a = Math.Sign(lane[k] - L);
+                return b == a ? 0 : b == -a && b != 0 ? 2 : 1;
+            });
+            (int, int, int, int) key =
+                (LayoutMetrics.MissingFanClasses(g, lane, s, L), graded, Math.Abs(2 * L - center2), L);
+            if (key.CompareTo(bestKey) < 0) { bestKey = key; bestL = L; }
+        }
+        lane[s] = bestL;
+    }
+
     // Lexicographic layout preference (all lower = better): (1) no steep body edges; (2) fewest
-    // lanes; (3) fewest one-floor spikes in the outside silhouette; (4) fewest path bends; then
-    // (5) shortest total vertical travel.
+    // lanes; (3) fewest unpreservable fan-direction classes (see PinEnd — a candidate whose
+    // first-floor spread still lets the start sit between its leftish and rightish children beats
+    // one that collapsed them onto adjacent lanes); (4) fewest one-floor spikes in the outside
+    // silhouette; (5) fewest path bends; then (6) shortest total vertical travel.
     private static bool Better(LGraph g, int[] x, int[] best)
     {
         int sx = LayoutMetrics.SteepBodyEdges(g, x), sb = LayoutMetrics.SteepBodyEdges(g, best);
         if (sx != sb) return sx < sb;
         int lx = LayoutMetrics.LanesUsed(x), lb = LayoutMetrics.LanesUsed(best);
         if (lx != lb) return lx < lb;
+        int fx = LayoutMetrics.FanClassesLost(g, x), fb = LayoutMetrics.FanClassesLost(g, best);
+        if (fx != fb) return fx < fb;
         int ox = LayoutMetrics.ExteriorSpikeCount(g, x), ob = LayoutMetrics.ExteriorSpikeCount(g, best);
         if (ox != ob) return ox < ob;
         int bx = LayoutMetrics.BendCount(g, x), bb = LayoutMetrics.BendCount(g, best);
@@ -475,6 +512,40 @@ public static class LayoutMetrics
             if (indeg[i] == 1 && outdeg[i] == 1 && lane[i] - lane[inOf[i]] != lane[outOf[i]] - lane[i])
                 bends++;
         return bends;
+    }
+
+    // A fan edge's direction in the raw game columns: is neighbor k leftish (-1), straight (0),
+    // or rightish (+1) of end node s? THE definition the whole fan-direction rule builds on.
+    internal static int FanDir(LGraph g, int s, int k) =>
+        Math.Sign(g.Nodes[k].Col - g.Nodes[s].Col);
+
+    // If end node s sat at lane L, how many of its baseline fan-direction classes would have NO
+    // representative among its neighbors' current lanes? 0 = full "\|/" signature preserved.
+    internal static int MissingFanClasses(LGraph g, int[] lane, int s, int L)
+    {
+        int[] kids = g.NeighborsOf[s];
+        var now = kids.Select(k => Math.Sign(lane[k] - L)).ToHashSet();
+        return kids.Select(k => FanDir(g, s, k)).Distinct().Count(b => !now.Contains(b));
+    }
+
+    // How many baseline fan-direction classes are UNPRESERVABLE at the map's single-node ends,
+    // i.e. lost even under the best possible end-node lane (children as placed by `lane`; the end
+    // node's own lane is NOT read — PinEnd chooses it last). A class is unpreservable when no
+    // in-range integer lane for the end node reproduces it. 0 = the layout can keep the raw map's
+    // full "\|/" spread at both ends.
+    public static int FanClassesLost(LGraph g, int[] lane)
+    {
+        int lost = 0, min = lane.Min(), max = lane.Max(), last = g.RowCount - 1;
+        foreach (int r in last == 0 ? new[] { 0 } : new[] { 0, last })
+        {
+            if (g.RowsOrdered[r].Length != 1) continue;
+            int s = g.RowsOrdered[r][0];
+            int bestMissing = int.MaxValue;
+            for (int L = min; L <= max && bestMissing > 0; L++)
+                bestMissing = Math.Min(bestMissing, MissingFanClasses(g, lane, s, L));
+            lost += bestMissing;
+        }
+        return lost;
     }
 
     // Edge crossings between edges that span the same pair of rows (readability, report-only).
