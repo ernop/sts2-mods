@@ -142,9 +142,20 @@ internal static class HookCatalog
         FieldInfo? runStateField = Field(typeof(NMapScreen), "_runState", missing);
         Field(typeof(NMapScreen), "_marker", missing);
         Field(typeof(NMapScreen), "_mapLegend", missing);
+        Field(typeof(NMapScreen), "_hasPlayedAnimation", missing);
+        Field(typeof(NMapScreen), "_drawingTools", missing);
+        Field(typeof(NMapScreen), "_drawingInput", missing);
+        Field(typeof(NMapScreen), "_mapBgContainer", missing);
+        Method(typeof(NMapScreen), "UpdateDrawingButtonStates", missing);
+        Method(typeof(NMapScreen), "OnMapDrawingButtonPressed", missing);
+        Method(typeof(NMapScreen), "OnMapErasingButtonPressed", missing);
+        Method(typeof(NMapScreen), "OnClearMapDrawingButtonPressed", missing);
+        Method(typeof(NMapScreen), "ProcessMouseDrawingEvent", missing);
+        Property(typeof(NMapScreen), "Drawings", missing);
 
         Field(typeof(NNormalMapPoint), "_icon", missing);
         Field(typeof(NNormalMapPoint), "_outline", missing);
+        Field(typeof(NNormalMapPoint), "_questIcon", missing);
         Field(typeof(NAncientMapPoint), "_icon", missing);
         Field(typeof(NAncientMapPoint), "_outline", missing);
         Field(typeof(NBossMapPoint), "_placeholderImage", missing);
@@ -153,6 +164,7 @@ internal static class HookCatalog
         Field(typeof(MapPoint), "coord", missing);
         Property(typeof(MapPoint), "PointType", missing);
         Property(typeof(MapPoint), "Children", missing);
+        Property(typeof(MapPoint), "Quests", missing);
 
         if (runStateField != null)
         {
@@ -162,6 +174,9 @@ internal static class HookCatalog
             Property(runState, "ActFloor", missing);
             PropertyInfo? act = Property(runState, "Act", missing);
             Property(runState, "MapPointHistory", missing);
+            PropertyInfo? extra = Property(runState, "ExtraFields", missing);
+            if (extra != null)
+                Property(extra.PropertyType, "StartedWithNeow", missing);
             PropertyInfo? runMap = Property(runState, "Map", missing);
             if (runMap != null)
                 Property(runMap.PropertyType, "SecondBossMapPoint", missing);

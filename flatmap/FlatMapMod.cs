@@ -2,25 +2,32 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Threading.Tasks;
 using FlatMap.Layout;
 using Godot;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Assets;
+using MegaCrit.Sts2.Core.Commands;
 using MegaCrit.Sts2.Core.ControllerInput;
 using MegaCrit.Sts2.Core.Debug;
 using MegaCrit.Sts2.Core.Entities.Multiplayer;
-using MegaCrit.Sts2.Core.Logging;
-using MegaCrit.Sts2.Core.Modding;
-using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using MegaCrit.Sts2.Core.Helpers;
+using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Map;
+using MegaCrit.Sts2.Core.Modding;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Nodes;
+using MegaCrit.Sts2.Core.Nodes.CommonUi;
+using MegaCrit.Sts2.Core.Nodes.Ftue;
+using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
-using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Nodes.Screens;
 using MegaCrit.Sts2.Core.Nodes.Screens.Capstones;
 using MegaCrit.Sts2.Core.Nodes.Screens.Map;
 using MegaCrit.Sts2.Core.Nodes.Screens.ScreenContext;
+using MegaCrit.Sts2.Core.Rooms;
+using MegaCrit.Sts2.Core.Saves;
+using MegaCrit.Sts2.Core.TestSupport;
 
 namespace FlatMap;
 
@@ -96,6 +103,13 @@ internal static class MiniMapController
     // real control onto the flat page while it's open — pixel-identical to vanilla — and return it
     // to the classic map screen on close. Vanilla anchors it at x = Size.X * 0.8.
     private static readonly FieldInfo MapLegendField = Reflect.Field(typeof(NMapScreen), "_mapLegend");
+    // Set true after the act-start banner plays so classic Open won't double-show it.
+    private static readonly FieldInfo HasPlayedAnimationField =
+        Reflect.Field(typeof(NMapScreen), "_hasPlayedAnimation");
+    private static readonly MethodInfo ExtraFieldsGetter =
+        Reflect.PropertyGetter(RunStateField.FieldType, "ExtraFields");
+    private static readonly MethodInfo StartedWithNeowGetter =
+        Reflect.PropertyGetter(ExtraFieldsGetter.ReturnType, "StartedWithNeow");
     // CurrentMapCoord (MapCoord?) tells us where the player is now (null before the first move).
     private static readonly MethodInfo CurrentCoordGetter =
         Reflect.PropertyGetter(RunStateField.FieldType, "CurrentMapCoord");
@@ -144,10 +158,19 @@ internal static class MiniMapController
     // draws nodes in the game's exact visual language (including "?" nodes that have resolved).
     private static readonly FieldInfo NormalIconField = Reflect.Field(typeof(NNormalMapPoint), "_icon");
     private static readonly FieldInfo NormalOutlineField = Reflect.Field(typeof(NNormalMapPoint), "_outline");
+    // Shared Spoils Map / Fur Coat "X marks the spot" badge (TextureRect %QuestIcon on normal nodes).
+    private static readonly FieldInfo NormalQuestIconField = Reflect.Field(typeof(NNormalMapPoint), "_questIcon");
     private static readonly FieldInfo AncientIconField = Reflect.Field(typeof(NAncientMapPoint), "_icon");
     private static readonly FieldInfo AncientOutlineField = Reflect.Field(typeof(NAncientMapPoint), "_outline");
     // Boss nodes have no _icon; the (non-Spine) act art lives in a "%PlaceholderImage" TextureRect.
     private static readonly FieldInfo BossImageField = Reflect.Field(typeof(NBossMapPoint), "_placeholderImage");
+
+    // Vanilla map drawings + tool strip — borrowed onto the flat page (same NMapDrawings instance).
+    private static readonly FieldInfo DrawingToolsField = Reflect.Field(typeof(NMapScreen), "_drawingTools");
+    private static readonly FieldInfo DrawingInputField = Reflect.Field(typeof(NMapScreen), "_drawingInput");
+    private static readonly FieldInfo MapBgContainerField = Reflect.Field(typeof(NMapScreen), "_mapBgContainer");
+    private static readonly MethodInfo UpdateDrawingButtonStatesMethod =
+        Reflect.Method(typeof(NMapScreen), "UpdateDrawingButtonStates");
 
     // The act's own map palette + the boss node art. The game loads the boss art from
     // EncounterModel.BossNodePath (+".png"/"_outline.png") even when the live node prefers Spine —
@@ -247,7 +270,9 @@ internal static class MiniMapController
             _classicDefaultFocus.FocusNeighborLeft = _classicPreviousLeft;
         if (FlatOpen())
             NCapstoneContainer.Instance?.Close();
+        StopMapOscillation();
         ReturnLegend();
+        ReturnDrawings();
     }
 
     // Directional navigation in use? (Controller or keyboard-only mode; both need a default focus.)
@@ -383,11 +408,16 @@ internal static class MiniMapController
     internal static void RefreshFlat()
     {
         if (!FlatOpen() || _screen == null || !GodotObject.IsInstanceValid(_screen)) return;
+        MiniMapScreen page = _screen;
         NMapScreen? screen = NMapScreen.Instance;
         if (screen == null) return;
         RecalcTravelMethod.Invoke(screen, null);
-        _screen.Configure(BuildModel(screen), screen.GetViewportRect().Size, coord => Travel(screen, coord));
-        _screen.QueueRedraw();
+        page.Configure(BuildModel(screen), screen.GetViewportRect().Size, coord => Travel(screen, coord));
+        // Keep borrowed drawings fitted if a viewport/travel refresh happens while flat is open.
+        if (_drawings != null && GodotObject.IsInstanceValid(_drawings))
+            FitDrawingsToFlat(_drawings, page.Size);
+        RelayoutBorrowedDrawingTools();
+        page.QueueRedraw();
     }
 
     // Add the "Flat map" toggle switch onto the classic map screen (once).
@@ -444,6 +474,76 @@ internal static class MiniMapController
         _screen.Configure(model, viewport, coord => Travel(screen, coord));
         cc.Open(_screen);
         BorrowLegend(screen);
+        BorrowDrawings(screen);
+        // Capstone AfterCapstoneOpened runs StartOscillation + act-start banner/FTUE.
+    }
+
+    // Top-bar map button pulse — same as NMapScreen.Open / Close.
+    internal static void StartMapOscillation()
+    {
+        try { NRun.Instance?.GlobalUi?.TopBar?.Map?.StartOscillation(); }
+        catch (Exception ex) { Dbg.Once("osc-start", $"StartOscillation failed: {ex.Message}"); }
+    }
+
+    internal static void StopMapOscillation()
+    {
+        try { NRun.Instance?.GlobalUi?.TopBar?.Map?.StopOscillation(); }
+        catch (Exception ex) { Dbg.Once("osc-stop", $"StopOscillation failed: {ex.Message}"); }
+    }
+
+    // Vanilla Open() shows NActBanner (+ FTUE after the scroll) on the first map of an act.
+    // Flat skips classic Open, so we recreate that chrome here (banner overlay; no scroll anim).
+    internal static void TryShowActStartChrome(NMapScreen screen)
+    {
+        if (_screen == null || !GodotObject.IsInstanceValid(_screen))
+            return;
+        object runState = RunStateField.GetValue(screen)!;
+        int actIndex = (int)ActIndexGetter.Invoke(runState, null)!;
+        int actFloor = (int)ActFloorGetter.Invoke(runState, null)!;
+        bool startedWithNeow = ExtraFieldsGetter.Invoke(runState, null) is object extra
+            && StartedWithNeowGetter.Invoke(extra, null) is true;
+        bool atActStart = (actIndex == 0 && startedWithNeow) ? actFloor == 1 : actFloor == 0;
+        if (!atActStart)
+            return;
+
+        bool hasPlayed = HasPlayedAnimationField.GetValue(screen) is true;
+        if (!hasPlayed)
+        {
+            HasPlayedAnimationField.SetValue(screen, true);
+            if (ActGetter.Invoke(runState, null) is ActModel act)
+            {
+                NActBanner? banner = NActBanner.Create(act, actIndex);
+                if (banner != null && GodotObject.IsInstanceValid(banner))
+                {
+                    _screen.AddChild(banner);
+                    banner.ZIndex = 80;
+                    Log.Info($"[FlatMap] act banner shown (act={actIndex + 1} floor={actFloor})");
+                }
+            }
+        }
+
+        // FTUE: vanilla only after the start-of-act scroll; we have no scroll, so show at act start
+        // the first time it hasn't been seen. Mark complete immediately (same as MapFtueCheck).
+        if (!TestMode.IsOn && !SaveManager.Instance.SeenFtue(NMapSelectFtue.id))
+            TaskHelper.RunSafely(ShowMapSelectFtueAsync());
+    }
+
+    private static async Task ShowMapSelectFtueAsync()
+    {
+        await Task.Delay(100);
+        if (_screen == null || !GodotObject.IsInstanceValid(_screen) || !FlatOpen())
+            return;
+        Control? anchor = _screen.EnsureFtueAnchor();
+        if (anchor == null)
+        {
+            Log.Info("[FlatMap] FTUE skipped — no start-node anchor");
+            return;
+        }
+        NMapSelectFtue ftue = NMapSelectFtue.Create(anchor);
+        NModalContainer.Instance?.Add(ftue);
+        SaveManager.Instance.MarkFtueAsComplete(NMapSelectFtue.id);
+        Log.Info("[FlatMap] map_select_ftue shown");
+        await ftue.WaitForPlayerToConfirm();
     }
 
     // --- The borrowed vanilla Legend panel -------------------------------------------------------
@@ -452,6 +552,21 @@ internal static class MiniMapController
     private static Vector2 _legendHomePos;
     private static Color _legendHomeModulate;
     private static bool _legendHomeVisible;
+
+    // --- The borrowed vanilla drawings layer + tool strip ----------------------------------------
+    private static NMapDrawings? _drawings;
+    private static Node? _drawingsHome;
+    private static Vector2 _drawingsHomePos;
+    private static Vector2 _drawingsHomeScale;
+    private static Vector2 _drawingsHomeSize;
+    private static Control? _drawingTools;
+    private static Node? _drawingToolsHome;
+    private static Color _drawingToolsHomeModulate;
+    private static bool _drawingToolsHomeVisible;
+    // Scene layout (bottom-left anchors + offsets) — must restore on return or classic map breaks.
+    private static float _drawingToolsHomeAnchorL, _drawingToolsHomeAnchorT, _drawingToolsHomeAnchorR, _drawingToolsHomeAnchorB;
+    private static float _drawingToolsHomeOffsetL, _drawingToolsHomeOffsetT, _drawingToolsHomeOffsetR, _drawingToolsHomeOffsetB;
+    private static Control.GrowDirection _drawingToolsHomeGrowH, _drawingToolsHomeGrowV;
 
     private static void BorrowLegend(NMapScreen screen)
     {
@@ -501,10 +616,277 @@ internal static class MiniMapController
         _legendHome = null;
     }
 
+    // Reparent the real NMapDrawings + DrawingTools onto the flat page so draw/erase/clear use
+    // the exact same game code (NMapDrawingInput → BeginLineLocal / network / save).
+    // IMPORTANT: do NOT Scale the Drawings control — Godot SubViewport/ViewportTexture often goes
+    // blank under a non-1 Scale. Resize Size to the flat page and remesh strokes via net-space.
+    private static void BorrowDrawings(NMapScreen screen)
+    {
+        if (_screen == null || !GodotObject.IsInstanceValid(_screen))
+            return;
+        NMapDrawings drawings = screen.Drawings;
+        if (!GodotObject.IsInstanceValid(drawings))
+            return;
+
+        StopFlatDrawing(screen);
+
+        if (!ReferenceEquals(drawings.GetParent(), _screen))
+        {
+            _drawings = drawings;
+            _drawingsHome = drawings.GetParent();
+            _drawingsHomePos = drawings.Position;
+            _drawingsHomeScale = drawings.Scale;
+            _drawingsHomeSize = drawings.Size;
+            _drawingsHome?.RemoveChild(drawings);
+            _screen.AddChild(drawings);
+        }
+
+        FitDrawingsToFlat(drawings, _screen.Size);
+
+        if (DrawingToolsField.GetValue(screen) is Control tools && GodotObject.IsInstanceValid(tools))
+        {
+            if (!ReferenceEquals(tools.GetParent(), _screen))
+            {
+                _drawingTools = tools;
+                _drawingToolsHome = tools.GetParent();
+                _drawingToolsHomeModulate = tools.Modulate;
+                _drawingToolsHomeVisible = tools.Visible;
+                _drawingToolsHomeAnchorL = tools.AnchorLeft;
+                _drawingToolsHomeAnchorT = tools.AnchorTop;
+                _drawingToolsHomeAnchorR = tools.AnchorRight;
+                _drawingToolsHomeAnchorB = tools.AnchorBottom;
+                _drawingToolsHomeOffsetL = tools.OffsetLeft;
+                _drawingToolsHomeOffsetT = tools.OffsetTop;
+                _drawingToolsHomeOffsetR = tools.OffsetRight;
+                _drawingToolsHomeOffsetB = tools.OffsetBottom;
+                _drawingToolsHomeGrowH = tools.GrowHorizontal;
+                _drawingToolsHomeGrowV = tools.GrowVertical;
+                _drawingToolsHome?.RemoveChild(tools);
+                _screen.AddChild(tools);
+            }
+            tools.Visible = true;
+            tools.Modulate = Colors.White;
+            tools.ZIndex = 55;
+            PlaceDrawingTools(tools, _screen.Size);
+        }
+    }
+
+    // Classic parks DrawingTools bottom-left (anchors_preset=2, ~208×68). That collides with our
+    // Flat map / Compress / Hide-unreachable column. On flat, pin to the empty LEFT gutter
+    // (mid-height). Children (HBox / hotkey) are center-anchored with pixel offsets sized for the
+    // native nine-patch — do NOT ResetSize() or they spill off the left edge.
+    private static void PlaceDrawingTools(Control tools, Vector2 viewport)
+    {
+        const float toolsW = 208f; // scene offset_right 264 - offset_left 56
+        const float toolsH = 68f;  // scene |offset_top 108| - |offset_bottom 40|
+        tools.SetAnchorsPreset(Control.LayoutPreset.TopLeft);
+        tools.GrowHorizontal = Control.GrowDirection.End;
+        tools.GrowVertical = Control.GrowDirection.End;
+        tools.Size = new Vector2(toolsW, toolsH);
+
+        // Leave room under the top bar and above the bottom-left toggle stack (~3 rows).
+        float toggleReserve = 16f + 3f * 34f + 24f;
+        float topClear = 96f;
+        float y = viewport.Y * 0.42f - toolsH * 0.5f;
+        y = Mathf.Clamp(y, topClear, Math.Max(topClear, viewport.Y - toggleReserve - toolsH));
+        // Match vanilla's left gutter (56); hotkey/tooltips extend slightly past the nine-patch.
+        tools.Position = new Vector2(56f, y);
+    }
+
+    // Re-place after viewport/configure changes while borrowed.
+    internal static void RelayoutBorrowedDrawingTools()
+    {
+        if (_drawingTools == null || !GodotObject.IsInstanceValid(_drawingTools) || _screen == null)
+            return;
+        PlaceDrawingTools(_drawingTools, _screen.Size);
+    }
+
+    private static void FitDrawingsToFlat(NMapDrawings drawings, Vector2 flatSize)
+    {
+        // Remesh through net-space so strokes track the new Size (ToNet/FromNet use Size).
+        var saved = drawings.GetSerializableMapDrawings();
+        drawings.ClearAllLines();
+
+        drawings.Scale = Vector2.One;
+        drawings.Position = Vector2.Zero;
+        drawings.Size = flatSize;
+        drawings.MouseFilter = Control.MouseFilterEnum.Ignore;
+        drawings.ZIndex = 15;
+        drawings.Visible = true;
+        drawings.Modulate = Colors.White;
+        SyncDrawingViewports(drawings);
+        drawings.LoadDrawings(saved);
+        // Ensure textures stay visible after Load (SetVisibleLater may have left them hidden).
+        ForceDrawingTexturesVisible(drawings);
+    }
+
+    // Half-res SubViewports + full-rect TextureRects must match Drawings.Size or strokes land wrong /
+    // the ViewportTexture looks empty. Idempotent — safe to call when a new player layer appears.
+    internal static void SyncDrawingViewports(NMapDrawings drawings)
+    {
+        Vector2 size = drawings.Size;
+        int halfW = Math.Max(1, (int)(size.X * 0.5f));
+        int halfH = Math.Max(1, (int)(size.Y * 0.5f));
+        var half = new Vector2I(halfW, halfH);
+        foreach (Node child in drawings.GetChildren())
+        {
+            if (child is not Control layer)
+                continue;
+            layer.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+            layer.MouseFilter = Control.MouseFilterEnum.Ignore;
+            if (layer.GetNodeOrNull("DrawViewport") is SubViewport vp)
+            {
+                if (vp.Size != half)
+                    vp.Size = half;
+                vp.RenderTargetUpdateMode = SubViewport.UpdateMode.Always;
+            }
+            if (layer.GetNodeOrNull("DrawViewportTextureRect") is TextureRect tr)
+            {
+                tr.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+                tr.Visible = true;
+                tr.Modulate = Colors.White;
+            }
+        }
+    }
+
+    private static void ForceDrawingTexturesVisible(NMapDrawings drawings)
+    {
+        foreach (Node child in drawings.GetChildren())
+        {
+            if (child.GetNodeOrNull("DrawViewportTextureRect") is TextureRect tr)
+                tr.Visible = true;
+            if (child.GetNodeOrNull("DrawViewport") is SubViewport vp)
+                vp.RenderTargetUpdateMode = SubViewport.UpdateMode.Always;
+        }
+        drawings.UpdateVisibilityFromSettings();
+        // Settings path can hide MP drawings; local strokes must still show.
+        foreach (Node child in drawings.GetChildren())
+        {
+            if (child.GetNodeOrNull("DrawViewportTextureRect") is TextureRect tr)
+                tr.Visible = true;
+        }
+    }
+
+    // While flat is open: keep half-res viewports matched (a player layer is created lazily on
+    // the first stroke — scene defaults won't match our resized Drawings without this).
+    internal static void TickBorrowedDrawings()
+    {
+        if (_drawings != null && GodotObject.IsInstanceValid(_drawings))
+            SyncDrawingViewports(_drawings);
+    }
+
+    internal static void ReturnDrawings()
+    {
+        NMapScreen? screen = NMapScreen.Instance;
+        if (screen != null && GodotObject.IsInstanceValid(screen))
+            StopFlatDrawing(screen);
+
+        NMapDrawings? drawings = _drawings;
+        _drawings = null;
+        if (drawings != null && GodotObject.IsInstanceValid(drawings))
+        {
+            // Remesh back into classic Size before reparenting home.
+            var saved = drawings.GetSerializableMapDrawings();
+            drawings.ClearAllLines();
+            drawings.GetParent()?.RemoveChild(drawings);
+            if (_drawingsHome != null && GodotObject.IsInstanceValid(_drawingsHome))
+            {
+                _drawingsHome.AddChild(drawings);
+                drawings.Scale = _drawingsHomeScale;
+                drawings.Size = _drawingsHomeSize.X > 1f ? _drawingsHomeSize : drawings.Size;
+                drawings.Position = _drawingsHomePos;
+                SyncDrawingViewports(drawings);
+                drawings.LoadDrawings(saved);
+                ForceDrawingTexturesVisible(drawings);
+                if (MapBgContainerField.GetValue(screen) is Control mapBg && GodotObject.IsInstanceValid(mapBg))
+                    drawings.RepositionBasedOnBackground(mapBg);
+            }
+            else
+                drawings.QueueFree();
+        }
+        _drawingsHome = null;
+
+        Control? tools = _drawingTools;
+        _drawingTools = null;
+        if (tools != null && GodotObject.IsInstanceValid(tools))
+        {
+            tools.GetParent()?.RemoveChild(tools);
+            if (_drawingToolsHome != null && GodotObject.IsInstanceValid(_drawingToolsHome))
+            {
+                _drawingToolsHome.AddChild(tools);
+                tools.AnchorLeft = _drawingToolsHomeAnchorL;
+                tools.AnchorTop = _drawingToolsHomeAnchorT;
+                tools.AnchorRight = _drawingToolsHomeAnchorR;
+                tools.AnchorBottom = _drawingToolsHomeAnchorB;
+                tools.OffsetLeft = _drawingToolsHomeOffsetL;
+                tools.OffsetTop = _drawingToolsHomeOffsetT;
+                tools.OffsetRight = _drawingToolsHomeOffsetR;
+                tools.OffsetBottom = _drawingToolsHomeOffsetB;
+                tools.GrowHorizontal = _drawingToolsHomeGrowH;
+                tools.GrowVertical = _drawingToolsHomeGrowV;
+                tools.Modulate = _drawingToolsHomeModulate;
+                tools.Visible = _drawingToolsHomeVisible;
+            }
+            else
+                tools.QueueFree();
+        }
+        _drawingToolsHome = null;
+    }
+
+    // Stop any in-progress NMapDrawingInput and clear the screen's private _drawingInput slot.
+    internal static void StopFlatDrawing(NMapScreen screen)
+    {
+        if (DrawingInputField.GetValue(screen) is NMapDrawingInput existing
+            && GodotObject.IsInstanceValid(existing))
+        {
+            existing.StopDrawing();
+        }
+        DrawingInputField.SetValue(screen, null);
+        if (GodotObject.IsInstanceValid(screen.Drawings))
+        {
+            screen.Drawings.StopLineLocal();
+            screen.Drawings.SetDrawingModeLocal(DrawingMode.None);
+        }
+        try { UpdateDrawingButtonStatesMethod.Invoke(screen, null); }
+        catch { /* buttons may be mid-teardown */ }
+    }
+
+    // Start draw/erase with the vanilla NMapDrawingInput, parented under the flat page so
+    // IsVisibleInTree() is true (classic NMapScreen is closed in flat mode).
+    internal static void BeginFlatDrawing(NMapScreen screen, DrawingMode mode, bool stopOnMouseRelease)
+    {
+        if (_screen == null || !GodotObject.IsInstanceValid(_screen) || !GodotObject.IsInstanceValid(screen.Drawings))
+            return;
+        StopFlatDrawing(screen);
+        NMapDrawingInput input = NMapDrawingInput.Create(screen.Drawings, mode, stopOnMouseRelease);
+        input.Connect(NMapDrawingInput.SignalName.Finished, Callable.From(() =>
+        {
+            DrawingInputField.SetValue(screen, null);
+            try { UpdateDrawingButtonStatesMethod.Invoke(screen, null); }
+            catch { /* ignore */ }
+        }));
+        DrawingInputField.SetValue(screen, input);
+        _screen.AddChild(input);
+        try { UpdateDrawingButtonStatesMethod.Invoke(screen, null); }
+        catch { /* ignore */ }
+    }
+
+    internal static bool IsDrawingActive(NMapScreen? screen = null)
+    {
+        screen ??= NMapScreen.Instance;
+        if (screen == null || !GodotObject.IsInstanceValid(screen) || !GodotObject.IsInstanceValid(screen.Drawings))
+            return false;
+        return screen.Drawings.GetLocalDrawingMode() != DrawingMode.None || screen.Drawings.IsLocalDrawing();
+    }
+
     // Clicking a travelable node runs the game's own selection path (identical to a real click),
     // then closes the page so the travel animates on the real map.
     private static void Travel(NMapScreen screen, MapCoord coord)
     {
+        // Vanilla NMapPoint.OnRelease: row-0 targets require the map-select FTUE to have been seen
+        // (unless TestMode). MarkFtueAsComplete runs when the FTUE is shown, before confirm.
+        if (coord.row == 0 && TestMode.IsOff && !SaveManager.Instance.SeenFtue(NMapSelectFtue.id))
+            return;
         if (!(bool)TravelEnabledGetter.Invoke(screen, null)!)
             return;
         if (PointDictField.GetValue(screen) is not System.Collections.IDictionary dict
@@ -524,6 +906,7 @@ internal static class MiniMapController
     {
         object runState = RunStateField.GetValue(screen)!;
         object act = ActGetter.Invoke(runState, null)!;
+        System.Collections.IDictionary? dict = PointDictField.GetValue(screen) as System.Collections.IDictionary;
         var model = new MiniMapModel
         {
             Current = CurrentCoordGetter.Invoke(runState, null) is MapCoord c ? c : null,
@@ -531,17 +914,18 @@ internal static class MiniMapController
             ActFloor = (int)ActFloorGetter.Invoke(runState, null)!,
             ActName = (string)LocStringFormat.Invoke(ActTitleGetter.Invoke(act, null), null)! ?? "",
             CurrentMarker = (MarkerField.GetValue(screen) as TextureRect)?.Texture,
+            QuestMarker = QuestMarkerTexture(dict),
             TravelEnabled = (bool)TravelEnabledGetter.Invoke(screen, null)!,
             MapBg = MapBgColorGetter.Invoke(act, null) is Color bg ? bg : new Color(0.05f, 0.06f, 0.09f),
             PathTraveled = MapTraveledColorGetter.Invoke(act, null) is Color tc ? tc : new Color(0.96f, 0.80f, 0.35f),
             PathUntraveled = MapUntraveledColorGetter.Invoke(act, null) is Color uc ? uc : new Color(1, 1, 1),
         };
 
-        if (PointDictField.GetValue(screen) is not System.Collections.IDictionary dict)
+        if (dict == null)
             return model;
 
         // Pass 1: read the live graph (coords, type, state, icon+outline art) and its edges.
-        var raw = new List<(MapCoord coord, MapPointType type, MapPointState state, Texture2D? icon, Texture2D? outline)>();
+        var raw = new List<(MapCoord coord, MapPointType type, MapPointState state, Texture2D? icon, Texture2D? outline, bool quest)>();
         foreach (System.Collections.DictionaryEntry entry in dict)
         {
             if (entry.Value is not NMapPoint np || !GodotObject.IsInstanceValid(np))
@@ -557,7 +941,9 @@ internal static class MiniMapController
                 icon = bossIcon ?? icon;       // the proper boss art, not a letter/placeholder
                 outline = bossOutline ?? outline;
             }
-            raw.Add((mp.coord, mp.PointType, np.State, icon, outline));
+            // Fur Coat / Spoils Map / any future AddQuest producer — same badge rule as vanilla.
+            bool quest = mp.Quests != null && mp.Quests.Count > 0;
+            raw.Add((mp.coord, mp.PointType, np.State, icon, outline, quest));
             foreach (MapPoint child in mp.Children)
                 model.Edges.Add((mp.coord, child.coord));
         }
@@ -593,6 +979,7 @@ internal static class MiniMapController
                 RawLane = r.coord.col,
                 // Reachable = can still be travelled to from where we are (or no current pos yet).
                 Reachable = model.Current is null || reachable.Contains(r.coord),
+                HasQuest = r.quest,
             };
         }
         if (FlatMapConfig.DumpMapGraph)
@@ -601,6 +988,24 @@ internal static class MiniMapController
             Log.Info($"[FlatMap] visited-? reveals: {(unknownReveals.Count > 0 ? string.Join(" ", unknownReveals) : "(none)")}");
         }
         return model;
+    }
+
+    // Live %QuestIcon texture from any normal node, with atlas fallback (Spoils Map / Fur Coat X).
+    private static Texture2D? QuestMarkerTexture(System.Collections.IDictionary? dict)
+    {
+        if (dict != null)
+        {
+            foreach (System.Collections.DictionaryEntry entry in dict)
+            {
+                if (entry.Value is not NNormalMapPoint np || !GodotObject.IsInstanceValid(np))
+                    continue;
+                Texture2D? tex = TextureOf(NormalQuestIconField.GetValue(np) as TextureRect);
+                if (tex != null)
+                    return tex;
+            }
+        }
+        return LoadTexture("res://images/atlases/ui_atlas.sprites/map/icons/map_spoils_map_marker.tres")
+            ?? LoadTexture("res://images/packed/map/icons/map_spoils_map_marker.png");
     }
 
     // Forward-reachable set: BFS down the edges (parent -> child) from every seed. Seeds are the
@@ -631,7 +1036,7 @@ internal static class MiniMapController
     // Log the live graph so a real random level can be reconstructed offline and dropped into the
     // layout test harness (layout/Program.cs) as a real-world case.
     private static void DumpGraph(
-        List<(MapCoord coord, MapPointType type, MapPointState state, Texture2D? icon, Texture2D? outline)> raw,
+        List<(MapCoord coord, MapPointType type, MapPointState state, Texture2D? icon, Texture2D? outline, bool quest)> raw,
         List<(MapCoord From, MapCoord To)> edges, Dictionary<MapCoord, int> lane)
     {
         var nb = new System.Text.StringBuilder("[FlatMap] MAPDUMP nodes(row,col,type):");
@@ -743,6 +1148,7 @@ internal struct MiniNode
     public int Lane;        // compacted display lane from MapLayout — NOT the raw game col
     public int RawLane;     // uncompressed lane == the game's column (for the "raw 1:1" view)
     public bool Reachable;  // can still be travelled to from the current position
+    public bool HasQuest;   // MapPoint.Quests.Count > 0 (Fur Coat / Spoils Map red X)
 }
 
 internal sealed class MiniMapModel
@@ -754,6 +1160,7 @@ internal sealed class MiniMapModel
     public MapCoord? Current;
     public bool TravelEnabled;       // can you move right now (current room finished)?
     public Texture2D? CurrentMarker; // the game's "you are here" arrow art (null in multiplayer)
+    public Texture2D? QuestMarker;   // shared Spoils Map / Fur Coat red-X badge art
     public Color MapBg;              // the act's own map background colour (Act.MapBgColor)
     public Color PathTraveled;       // the act's traveled-path colour (Act.MapTraveledColor)
     public Color PathUntraveled;     // the act's untraveled-path colour (Act.MapUntraveledColor)
@@ -910,6 +1317,7 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
         _hideUnreachableToggle.FocusNeighborTop = _hideUnreachableToggle.GetPathTo(_compressToggle);
         UpdateLayoutPositions();
         RebuildNodeFocusControls();
+        MiniMapController.RelayoutBorrowedDrawingTools();
         if (restoreNodeFocus && restoreCoord is MapCoord target
             && _nodeFocusControls.TryGetValue(target, out MapNodeFocusControl? replacement))
             replacement.GrabFocus();
@@ -939,6 +1347,9 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
             GetTree().Connect(SceneTree.SignalName.ProcessFrame, _tick);
             _tickConnected = true;
         }
+        MiniMapController.StartMapOscillation();
+        if (NMapScreen.Instance is NMapScreen map)
+            MiniMapController.TryShowActStartChrome(map);
         QueueRedraw();
     }
 
@@ -947,6 +1358,8 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
         // The container disables our ProcessMode on close but leaves the node parented; hide it
         // ourselves so our opaque page can't linger over the game once closed.
         Visible = false;
+        MiniMapController.StopMapOscillation();
+        MiniMapController.ReturnDrawings(); // vanilla drawings + tools go home
         MiniMapController.ReturnLegend(); // the borrowed vanilla legend goes home
         if (_tickConnected)
         {
@@ -958,8 +1371,56 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
         _pulsePhase.Clear();
         _prevHover = null;
         _pressed = null;
+        if (_ftueAnchor != null && GodotObject.IsInstanceValid(_ftueAnchor))
+        {
+            _ftueAnchor.QueueFree();
+            _ftueAnchor = null;
+        }
         foreach (StringName hk in BackHotkeys)
             NHotkeyManager.Instance?.RemoveHotkeyReleasedBinding(hk, OnBack);
+    }
+
+    // Invisible target for NMapSelectFtue (needs GlobalPosition + Size + ZIndex).
+    private Control? _ftueAnchor;
+
+    internal Control? EnsureFtueAnchor()
+    {
+        if (_model == null)
+            return null;
+        MiniNode? start = null;
+        foreach (MiniNode n in _model.Nodes.Values)
+        {
+            if (n.Type == MapPointType.Ancient)
+            {
+                start = n;
+                break;
+            }
+        }
+        if (start == null)
+        {
+            foreach (MiniNode n in _model.Nodes.Values.OrderBy(n => n.Coord.row).ThenBy(n => LaneOf(n)))
+            {
+                start = n;
+                break;
+            }
+        }
+        if (start is not MiniNode s || !_positions.TryGetValue(s.Coord, out Vector2 p))
+            return null;
+        float r = RadiusOf(s);
+        if (_ftueAnchor == null || !GodotObject.IsInstanceValid(_ftueAnchor))
+        {
+            _ftueAnchor = new Control
+            {
+                Name = "FlatMapFtueAnchor",
+                MouseFilter = Control.MouseFilterEnum.Ignore,
+                ZIndex = 25,
+            };
+            AddChild(_ftueAnchor);
+        }
+        _ftueAnchor.Position = p - new Vector2(r, r);
+        _ftueAnchor.Size = new Vector2(r * 2f, r * 2f);
+        _ftueAnchor.Visible = true;
+        return _ftueAnchor;
     }
 
     // --- The page tick (per-frame while open) drives all MOTION: the hover swell for every node
@@ -1014,6 +1475,9 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
                     else _hoverAnim[c] = next;
                 }
             }
+
+            // Keep SubViewport sizes in sync when a drawing layer is created mid-stroke.
+            MiniMapController.TickBorrowedDrawings();
 
             // The page is animated whenever it's open (pulsing frontier), so redraw each frame.
             QueueRedraw();
@@ -1228,6 +1692,27 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
     {
         if (_model == null)
             return;
+
+        // Right = draw, Middle = erase — same as NMapScreen.ProcessMouseDrawingEvent.
+        if (e is InputEventMouseButton mbDraw
+            && mbDraw.Pressed
+            && (mbDraw.ButtonIndex == MouseButton.Right || mbDraw.ButtonIndex == MouseButton.Middle))
+        {
+            NMapScreen? map = NMapScreen.Instance;
+            if (map != null && GodotObject.IsInstanceValid(map))
+            {
+                DrawingMode mode = mbDraw.ButtonIndex == MouseButton.Right
+                    ? DrawingMode.Drawing : DrawingMode.Erasing;
+                MiniMapController.BeginFlatDrawing(map, mode, stopOnMouseRelease: true);
+                AcceptEvent();
+            }
+            return;
+        }
+
+        // While a draw/erase tool is active, left-click belongs to NMapDrawingInput — not travel.
+        if (MiniMapController.IsDrawingActive())
+            return;
+
         if (e is InputEventMouseMotion mm)
         {
             MapCoord? was = _hovered;
@@ -1456,9 +1941,25 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
 
         DrawNodeShape(font, p, vr, n.EffType, n.Icon, n.Outline, rim, thickRim, iconTint);
 
+        // Spoils Map / Fur Coat quest badge — vanilla %QuestIcon, upper-right, undimmed.
+        if (n.HasQuest)
+            DrawQuestMarker(p, vr);
+
         // The one fixed cue: the game's red "you are here" marker arrow.
         if (isCurrent)
             DrawCurrentMarker(p, vr);
+    }
+
+    // Vanilla QuestIcon: ~48px red X on a ~92px room icon, upper-right of IconContainer.
+    private void DrawQuestMarker(Vector2 p, float r)
+    {
+        Texture2D? marker = _model?.QuestMarker;
+        if (marker == null || !GodotObject.IsInstanceValid(marker))
+            return;
+        float d = r * 1.1f; // ≈ 48/92 of the icon's drawn diameter (2.05*r)
+        // Offsets mirrored from normal_map_point.tscn QuestIcon (upper-right of the room icon).
+        Vector2 center = p + new Vector2(r * 0.55f, -r * 0.70f);
+        DrawTextureRect(marker, new Rect2(center.X - d * 0.5f, center.Y - d * 0.5f, d, d), false);
     }
 
     // A node's pulse phase: the stable per-coord phase, unless an unfocus reset (vanilla's
@@ -1643,6 +2144,86 @@ internal static class NMapScreen_Process_Patch
         if (!ModRuntime.Enabled) return;
         try { MiniMapController.Tick(__instance); }
         catch (Exception ex) { ModRuntime.Disable(nameof(NMapScreen_Process_Patch), ex); }
+    }
+}
+
+// While the flat page owns the borrowed DrawingTools, button presses still fire the classic
+// NMapScreen handlers — redirect them so NMapDrawingInput is parented under the visible flat page.
+[HarmonyPatch(typeof(NMapScreen), "OnMapDrawingButtonPressed")]
+internal static class NMapScreen_OnMapDrawingButtonPressed_Patch
+{
+    private static bool Prefix(NMapScreen __instance)
+    {
+        if (!ModRuntime.Enabled || !MiniMapController.FlatShown()) return true;
+        try
+        {
+            if (AccessTools.Field(typeof(NMapScreen), "_drawingInput")?.GetValue(__instance) is NMapDrawingInput cur
+                && GodotObject.IsInstanceValid(cur) && cur.DrawingMode == DrawingMode.Drawing)
+                MiniMapController.StopFlatDrawing(__instance);
+            else
+                MiniMapController.BeginFlatDrawing(__instance, DrawingMode.Drawing, stopOnMouseRelease: false);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            ModRuntime.Disable(nameof(NMapScreen_OnMapDrawingButtonPressed_Patch), ex);
+            return true;
+        }
+    }
+}
+
+[HarmonyPatch(typeof(NMapScreen), "OnMapErasingButtonPressed")]
+internal static class NMapScreen_OnMapErasingButtonPressed_Patch
+{
+    private static bool Prefix(NMapScreen __instance)
+    {
+        if (!ModRuntime.Enabled || !MiniMapController.FlatShown()) return true;
+        try
+        {
+            if (AccessTools.Field(typeof(NMapScreen), "_drawingInput")?.GetValue(__instance) is NMapDrawingInput cur
+                && GodotObject.IsInstanceValid(cur) && cur.DrawingMode == DrawingMode.Erasing)
+                MiniMapController.StopFlatDrawing(__instance);
+            else
+                MiniMapController.BeginFlatDrawing(__instance, DrawingMode.Erasing, stopOnMouseRelease: false);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            ModRuntime.Disable(nameof(NMapScreen_OnMapErasingButtonPressed_Patch), ex);
+            return true;
+        }
+    }
+}
+
+[HarmonyPatch(typeof(NMapScreen), "OnClearMapDrawingButtonPressed")]
+internal static class NMapScreen_OnClearMapDrawingButtonPressed_Patch
+{
+    private static bool Prefix(NMapScreen __instance)
+    {
+        if (!ModRuntime.Enabled || !MiniMapController.FlatShown()) return true;
+        try
+        {
+            __instance.Drawings.ClearDrawnLinesLocal();
+            SfxCmd.Play("event:/sfx/ui/map/map_erase");
+            AccessTools.Method(typeof(NMapScreen), "UpdateDrawingButtonStates")?.Invoke(__instance, null);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            ModRuntime.Disable(nameof(NMapScreen_OnClearMapDrawingButtonPressed_Patch), ex);
+            return true;
+        }
+    }
+}
+
+// Skip classic right/middle-click drawing while flat owns the tools (classic isn't open anyway).
+[HarmonyPatch(typeof(NMapScreen), "ProcessMouseDrawingEvent")]
+internal static class NMapScreen_ProcessMouseDrawingEvent_Patch
+{
+    private static bool Prefix()
+    {
+        if (!ModRuntime.Enabled) return true;
+        return !MiniMapController.FlatShown();
     }
 }
 

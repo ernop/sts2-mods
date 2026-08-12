@@ -85,9 +85,10 @@ These are the ONLY intended differences from vanilla. Everything else matches.
 11. **No debug-travel support** (decided 2026-08-01; was gap §3.12): vanilla's
     dev-console `IsDebugTravelEnabled` click-anywhere is not honored on the flat page.
     Player-facing travel rules are vanilla-identical.
-12. **No map drawings on the flat page** (decided 2026-08-01, was D2): draw/erase/clear/
-    share stay classic-only (lines are stored in bg-relative net-space and would land
-    wrong on the compressed layout). F flips to classic to see them.
+12. **Map drawings on the flat page** (updated 2026-08-08; was conscious §2.12): the real
+    `NMapDrawings` + `%DrawingTools` are borrowed onto the flat page (same code path as
+    classic — `NMapDrawingInput`, draw/erase/clear, net sync). Size is kept native and
+    Scale fits the flat viewport so strokes survive F-flips; F still flips modes.
 13. **No multiplayer visuals on the flat page** (decided 2026-08-01, was D3): vote
     badges, ping ripples, split-vote animation, and remote cursors are not drawn. The
     underlying systems keep working untouched — flat-page clicks cast real votes, pings
@@ -107,11 +108,11 @@ These are the ONLY intended differences from vanilla. Everything else matches.
 
 ### 3.2 Ink-dot paths — [retired → conscious §2.10]
 
-### 3.3 Quest icons — information loss, top priority
+### 3.3 Quest icons — [done 2026-08-08]
 Vanilla shows `_questIcon` on any node whose `MapPoint.Quests.Count > 0` (live-updated
-via `Point.NodeMarkedChanged`). The flat page drops quest markers entirely. Read
-`np.Point.Quests.Count` in `BuildModel`, grab the live `_questIcon` texture (like
-`_icon`/`_outline`), draw it at vanilla's relative offset/scale on the node.
+via `Point.NodeMarkedChanged`). Flat page now reads that count in `BuildModel`, grabs the
+live `_questIcon` / `map_spoils_map_marker` texture, and draws it upper-right of the node
+(Fur Coat + Spoils Map share this badge; Winged Boots already via Travelable).
 
 ### 3.4 Per-node icon rotation
 Vanilla rotates every normal node's icon container by `NextGaussianFloat(0, 8)` degrees
@@ -137,10 +138,10 @@ in `DrawNodeShape` (`DrawSetTransform` is already used for the ink circle).
   `wipe_map` sfx already play via `TravelToMapCoord`. Close the page after the beat
   (~0.5 s), not instantly.
 
-### 3.7 Act banner at act start
-Vanilla shows `NActBanner.Create(act, actIndex)` on the first map open of an act; our
-Open-prefix skips classic `Open()`, so flat mode never shows it. Create the same banner
-over the flat page on the first flat open of each act (track per `(runId, actIndex)`).
+### 3.7 Act banner at act start — [done 2026-08-08]
+Vanilla shows `NActBanner.Create(act, actIndex)` on the first map open of an act. Flat
+mode now creates the same banner over the flat page and stamps `_hasPlayedAnimation` so
+classic won't double-play after an F-flip.
 
 ### 3.8 Visited-node history hover tips
 Hovering a Traveled node in vanilla (mouse only) shows
@@ -169,15 +170,11 @@ except the added colour boundaries.* Concretely:
 - If 1.45× hover collides with a neighbour at compressed spacing, **shrink base radii**
   (sizing policy) rather than weaken the motion.
 
-### 3.10 Legend parity (updated 2026-08-01)
-- **Hover reaction = vanilla's**: held `AnimHover` swell (1.45× + white outline flash on
-  travelable) on every node of the hovered type, released on unfocus — replaces our
-  continuous pulse.
-- **Hover tips**: real `NMapLegendItem`s show localized tips on focus; verify they fire
-  while the panel is borrowed onto the flat page; forward if not.
-- **Slide-in**: reuse vanilla's open tween (from x+120, 0.1 s delay) when borrowing.
-- **Controller**: wire `confirm` to jump focus into the legend list and up/down between
-  items, as `OnLegendHotkeyPressed` does on the classic map.
+### 3.10 Legend parity — [done enough 2026-08-08]
+Borrowed real `_mapLegend`: mouse hover tips fire on the live `NMapLegendItem`s; legend
+row hover swells matching nodes (vanilla AnimHover-equivalent). Remaining nits not worth
+blocking: slide-in from x+120 (instant place is fine on flat), controller `confirm`→legend
+focus hotkey (mouse path is the common case).
 
 ### 3.11 Marker suppression parity
 Never show the marker when the current row is the start or boss row; hide it during
@@ -186,15 +183,13 @@ placement itself stays conscious (§2.7).
 
 ### 3.12 Debug travel — [retired → conscious §2.11]
 
-### 3.13 Top-bar map button oscillation
-Call `TopBar.Map.StartOscillation()` on flat open and `StopOscillation()` on close, as
-vanilla does, so the top bar signals "this button closes what you're looking at" in both
-modes.
+### 3.13 Top-bar map button oscillation — [done 2026-08-08]
+`TopBar.Map.StartOscillation()` on flat open / `StopOscillation()` on close.
 
-### 3.14 First-run FTUE ("Select a starting room")
-On the first flat open with `map_select_ftue` unseen, anchor the real
-`NMapSelectFtue.Create(control)` on our start node's rect, mark seen, and gate row-0
-travel until confirmed — the same rule `NMapPoint.OnRelease` enforces.
+### 3.14 First-run FTUE ("Select a starting room") — [done 2026-08-08]
+On act-start flat open with `map_select_ftue` unseen: `NMapSelectFtue.Create` anchored on
+the start node, `NModalContainer.Add`, `MarkFtueAsComplete`, wait for confirm. Row-0
+travel gated like `NMapPoint.OnRelease` until the FTUE has been seen.
 
 ### 3.15 Palette change (new 2026-08-01)
 `BrightFor`: **Shop → pure gold**, **Unknown `?` → light blue**. Tune exact shades
@@ -227,13 +222,13 @@ dark art; state lives entirely in the surround:
 
 ## 4. Decisions still needed ([decide])
 
-*(none open — D1→§3.16, D2→§2.12, D3→§2.13, all decided 2026-08-01)*
+*(none open — D1→§3.16, D2→§2.12 drawings shipped, D3→§2.13, D4 closed below)*
 
-### D4 — (investigation, not a decision) Icon shader `map_color`
-Vanilla's `_icon` renders through a `ShaderMaterial` with
-`map_color = MapBgColor.Lerp(Gray, 0.5)`. We draw the raw texture. A/B screenshot the
-same node type flat vs classic during batch 1; if interiors visibly differ, port the
-material; else record as immaterial and close.
+### D4 — Icon shader `map_color` — [closed 2026-08-08]
+Vanilla's `_icon` uses `ShaderMaterial` with
+`map_color = MapBgColor.Lerp(Gray, 0.5)` (softens icons into the parchment). Flat draws
+the raw texture on purpose under Neon Rims (natural interiors + coloured outline bodies).
+Applying `map_color` would muddy that look. Closed as immaterial / conscious with §2.3.
 
 ---
 
@@ -245,7 +240,7 @@ map of the same run (F makes this a one-key comparison).
 1. **De-divergence & colour batch**: §3.9 (motion/border parity incl. white-ring
    removal), §3.10 hover-reaction swap, §3.15 palette, §3.16 brightness revert (+ D4
    A/B check).
-2. **§3.3 quest icons** (information correctness).
+2. **§3.3 quest icons** — [done 2026-08-08].
 3. **Look & feel batch**: §3.4 rotation, §3.5 sfx+fade, §3.7 act banner, §3.6 circle
    seeding + travel brushstroke.
 4. **Info & integration batch**: §3.8 history tips, §3.10 legend tips/slide/controller,

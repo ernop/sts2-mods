@@ -74,6 +74,12 @@ Cross-cutting policies in "Invariants" below are mandatory.
 - **[done*]** **Legend = the game's own Legend panel, used exactly**: the real `NMapScreen`
   `_mapLegend` control is **borrowed** onto the flat page while it's open (vanilla anchor,
   x = width × 0.8) and returned to the classic screen untouched on close/disable.
+- **[done]** **Quest markers (Fur Coat / Spoils Map)** (2026-08-08): any node with
+  `MapPoint.Quests.Count > 0` shows vanilla's red-X `%QuestIcon` (`map_spoils_map_marker`)
+  upper-right. Winged Boots already via relic-aware `Travelable`.
+- **[done]** **Map drawings** (2026-08-08): the real `NMapDrawings` + DrawingTools are
+  borrowed onto the flat page — same draw / erase / clear / right-middle-click path as
+  classic (`NMapDrawingInput`).
 - **[done*]** **Legend-hover pulse** (the original's lovely detail, 2026-07-30): mousing over a
   legend item toggles the same **continuous pulse** used for travelable nodes, for **every node
   of that type**. Implemented by hit-testing the borrowed real `NMapLegendItem`s (their fixed node
