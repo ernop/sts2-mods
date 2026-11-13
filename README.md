@@ -15,9 +15,10 @@ combat, rewards, or any other gameplay.**
 |---|---|
 | ![Flat map](docs/images/flat-map.png) | ![Mini-cards](docs/images/deck-view.png) |
 
-> **Compatibility target: Slay the Spire 2 `v0.110.1`.**
+> **Compatibility target: Slay the Spire 2 `v0.113.0`.**
 >
-> Each mod checks every game hook before enabling. If an STS2 update moves an internal member,
+> Each mod checks every game hook, and every game member its compiled code calls, before
+> enabling. If an STS2 update moves or changes a member,
 > the mod logs the missing hooks, disables itself, and leaves the vanilla UI running. Harmony
 > setup is rolled back if patching fails, so neither mod ever intentionally leaves a
 > half-patched UI.
@@ -88,7 +89,7 @@ shrinks the layout cell and the rendered scale together and everything reflows. 
 
 ## Requirements
 
-- Slay the Spire 2 `v0.110.1`.
+- Slay the Spire 2 `v0.113.0`.
 - No gameplay dependencies. Both mods use the game's built-in mod loader.
 
 ## Install
@@ -134,7 +135,7 @@ map-drawing design directives).
 
 ## Status / caveats
 
-- Targets STS2 `v0.110.1`; `TestedGameVersion` in each mod and `min_game_version` in each
+- Targets STS2 `v0.113.0`; `TestedGameVersion` in each mod and `min_game_version` in each
   manifest record that target. Build, hook, and in-game checks in `PUBLISHING.md` are release
   gates.
 - Mouse, keyboard, and controller can activate every checkbox. On the flat map, controller

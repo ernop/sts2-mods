@@ -51,9 +51,10 @@ public static class FlatMapMod
     public const Key MapKey = Key.M;
 
     // FlatMap was built and tested against this game version. On another build, every private
-    // hook is preflighted before Harmony changes anything. Missing hooks disable FlatMap and
-    // leave the game's UI untouched instead of crashing or leaving a partially patched mod.
-    public const string TestedGameVersion = "v0.110.1";
+    // hook and every game member our compiled code calls is preflighted before Harmony changes
+    // anything. Missing members disable FlatMap and leave the game's UI untouched instead of
+    // crashing or leaving a partially patched mod.
+    public const string TestedGameVersion = "v0.113.0";
 
     public static void Init()
     {

@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
+using System.Reflection.Emit;
 using System.Runtime.ExceptionServices;
 using Godot;
 using HarmonyLib;
@@ -33,15 +35,16 @@ internal static class ModRuntime
 
     internal static bool TryEnable(Assembly assembly)
     {
-        IReadOnlyList<string> missing;
+        var missing = new List<string>();
         try
         {
-            missing = HookCatalog.FindMissing();
+            missing.AddRange(HookCatalog.FindMissing());
+            missing.AddRange(CompiledReferences.FindUnresolved(assembly));
         }
         catch (Exception ex)
         {
 #if !PUBLIC_BUILD
-            throw new InvalidOperationException("[FlatMap] STRICT (dev) build: compatibility preflight threw — fix HookCatalog.", ex);
+            throw new InvalidOperationException("[FlatMap] STRICT (dev) build: compatibility preflight threw — fix HookCatalog or CompiledReferences.", ex);
 #else
             LogDisabled($"compatibility preflight failed: {ex}");
             return false;
@@ -229,6 +232,106 @@ internal static class HookCatalog
         return value;
     }
 
+}
+
+/// <summary>
+/// Preflight for the game members FlatMap's compiled code names directly (public calls, fields,
+/// types). .NET binds those only when the calling method first runs (forcing JIT compilation does
+/// not bind them), so a renamed or re-signatured member would otherwise fail mid-run; resolving
+/// every member token in our IL against the loaded game reports it here instead.
+/// </summary>
+internal static class CompiledReferences
+{
+    private static readonly OpCode[] OneByteOpCodes = new OpCode[256];
+    private static readonly OpCode[] TwoByteOpCodes = new OpCode[256];
+
+    static CompiledReferences()
+    {
+        foreach (FieldInfo field in typeof(OpCodes).GetFields(BindingFlags.Public | BindingFlags.Static))
+        {
+            var opCode = (OpCode)field.GetValue(null)!;
+            ushort value = unchecked((ushort)opCode.Value);
+            if (opCode.Size == 1)
+                OneByteOpCodes[value] = opCode;
+            else
+                TwoByteOpCodes[value & 0xFF] = opCode;
+        }
+    }
+
+    internal static IReadOnlyList<string> FindUnresolved(Assembly assembly)
+    {
+        var unresolved = new List<string>();
+        Type[] types;
+        try
+        {
+            types = assembly.GetTypes();
+        }
+        catch (ReflectionTypeLoadException ex)
+        {
+            foreach (Exception? loaderError in ex.LoaderExceptions)
+                if (loaderError != null) unresolved.Add(loaderError.Message);
+            return unresolved;
+        }
+
+        const BindingFlags declared = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance
+                                      | BindingFlags.Static | BindingFlags.DeclaredOnly;
+        foreach (Type type in types)
+        {
+            Type[]? typeArgs = type.IsGenericType ? type.GetGenericArguments() : null;
+            foreach (MethodBase method in type.GetMethods(declared).Concat<MethodBase>(type.GetConstructors(declared)))
+            {
+                byte[]? il = method.GetMethodBody()?.GetILAsByteArray();
+                if (il == null)
+                    continue;
+                Type[]? methodArgs = method.IsGenericMethod ? method.GetGenericArguments() : null;
+                for (int i = 0; i < il.Length;)
+                {
+                    OpCode op = il[i] == 0xFE ? TwoByteOpCodes[il[i + 1]] : OneByteOpCodes[il[i]];
+                    if (op.Size == 0)
+                        throw new InvalidOperationException($"unknown IL opcode 0x{il[i]:X2} at {i} in {type.Name}.{method.Name}");
+                    i += op.Size;
+                    switch (op.OperandType)
+                    {
+                        case OperandType.InlineMethod:
+                        case OperandType.InlineField:
+                        case OperandType.InlineType:
+                        case OperandType.InlineTok:
+                            try
+                            {
+                                method.Module.ResolveMember(BitConverter.ToInt32(il, i), typeArgs, methodArgs);
+                            }
+                            catch (Exception ex) when (ex is MissingMemberException or TypeLoadException)
+                            {
+                                unresolved.Add($"{type.Name}.{method.Name}: {ex.Message}");
+                            }
+                            i += 4;
+                            break;
+                        case OperandType.InlineNone:
+                            break;
+                        case OperandType.ShortInlineBrTarget:
+                        case OperandType.ShortInlineI:
+                        case OperandType.ShortInlineVar:
+                            i += 1;
+                            break;
+                        case OperandType.InlineVar:
+                            i += 2;
+                            break;
+                        case OperandType.InlineI8:
+                        case OperandType.InlineR:
+                            i += 8;
+                            break;
+                        case OperandType.InlineSwitch:
+                            i += 4 + 4 * BitConverter.ToInt32(il, i);
+                            break;
+                        default: // InlineBrTarget, InlineI, InlineSig, InlineString, ShortInlineR
+                            i += 4;
+                            break;
+                    }
+                }
+            }
+        }
+        return unresolved;
+    }
 }
 
 // Reflection calls remain fail-fast internally, but ModRuntime preflights all static lookups before

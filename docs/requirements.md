@@ -230,7 +230,8 @@ Cross-cutting policies in "Invariants" below are mandatory.
 
 ## 4. Invariants & policies (mandatory)
 
-- **Preflight and disable safely.** Validate every private/string-named hook before patching.
+- **Preflight and disable safely.** Validate every private/string-named hook, and every game
+  member the compiled code references, before patching.
   Missing members or setup failures log a clear incompatibility and preserve the vanilla UI;
   never leave a partially enabled feature.
 - **View-only / connectivity sanctity.** Never modify the real map's data or nodes; the moves we draw

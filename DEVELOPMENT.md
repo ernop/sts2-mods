@@ -7,7 +7,12 @@ deliberately explicit so nobody has to rediscover it. This repo runs from WSL
 ## Compatibility policy: preflight, then enable all-or-nothing
 
 `Runtime/ModRuntime.cs` (per mod) validates every private/string-named game member before
-Harmony applies a patch (`HookCatalog.FindMissing`). Missing members produce one
+Harmony applies a patch (`HookCatalog.FindMissing`). It also resolves every game member
+the mod's own compiled IL references (`CompiledReferences.FindUnresolved`): a public
+signature change otherwise passes the hook check and throws `MissingMethodException` the
+first time the call runs. (STS2 v0.113.0 changed `NHotkeyManager.PushHotkeyReleasedBinding`
+and `RemoveHotkeyReleasedBinding`; the v0.110.1 FlatMap build threw inside
+`NCapstoneContainer.Open` and left the map stuck open.) Missing members produce one
 explicit `DISABLED` log with the full list, and STS2 continues with its vanilla UI.
 If `PatchAll` fails partway, the mod calls `UnpatchAll(HarmonyId)`; every callback
 also checks `ModRuntime.Enabled`, so even an unsuccessful rollback cannot run a
@@ -34,7 +39,7 @@ integration changes.
 - Managed DLLs live in `…\Slay the Spire 2\data_sts2_windows_x86_64\`.
   The mod references `sts2.dll`, `GodotSharp.dll`, `0Harmony.dll` from there
   (reference-only — nothing is bundled or copied).
-- Current compatibility target: game version **v0.110.1**.
+- Current compatibility target: game version **v0.113.0**.
 
 ## Decompiler (how to read game internals)
 
