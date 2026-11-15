@@ -396,7 +396,7 @@ internal static class MiniMapController
         if (flat)
         {
             if (screen.IsOpen) screen.Close(false); // drop classic instantly (no fade) — no flash
-            if (!FlatOpen()) OpenFlat(screen);
+            if (!FlatOpen()) OpenFlat(screen, nameof(SetFlat));
         }
         else
         {
@@ -451,13 +451,34 @@ internal static class MiniMapController
     // Entry point from the NMapScreen.Open prefix: render the flat page instead of the classic map.
     // Open() while the flat page is already up is a no-op, as vanilla Open() is while IsOpen:
     // RunManager.Proceed calls Open() to start travel whether or not the map is showing.
-    internal static void OpenFlatFromHook(NMapScreen screen)
+    internal static void OpenFlatFromHook(NMapScreen screen, string via)
     {
-        if (FlatOpen()) return;
-        OpenFlat(screen);
+        if (FlatOpen())
+        {
+            Log.Info($"[FlatMap] map open from {via} while the flat page is up: no-op");
+            return;
+        }
+        OpenFlat(screen, via);
     }
 
-    private static void OpenFlat(NMapScreen screen)
+    // The method that called NMapScreen.Open (RunManager.Proceed, NTopBarMapButton.OnRelease,
+    // NMapRoom._Ready or ReopenMap, our ToggleMap), so each open in the log names its cause.
+    // Frames without a declaring type are Harmony's replacement for the patched Open.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    internal static string OpenCaller()
+    {
+        foreach (System.Diagnostics.StackFrame frame in new System.Diagnostics.StackTrace(1, false).GetFrames())
+        {
+            MethodBase? method = frame.GetMethod();
+            Type? type = method?.DeclaringType;
+            if (type == null || type == typeof(NMapScreen) || type == typeof(NMapScreen_Open_Patch))
+                continue;
+            return $"{type.Name}.{method!.Name}";
+        }
+        return "an unidentified caller";
+    }
+
+    private static void OpenFlat(NMapScreen screen, string via)
     {
         NCapstoneContainer? cc = NCapstoneContainer.Instance;
         if (cc == null) return; // not in a run / no capstone container -> nothing to open into
@@ -468,7 +489,7 @@ internal static class MiniMapController
 
         MiniMapModel model = BuildModel(screen);
         Vector2 viewport = screen.GetViewportRect().Size;
-        Log.Info($"[FlatMap] flat open: nodes={model.Nodes.Count} edges={model.Edges.Count} " +
+        Log.Info($"[FlatMap] flat open from {via}: nodes={model.Nodes.Count} edges={model.Edges.Count} " +
                  $"viewport={viewport} current={(model.Current?.ToString() ?? "none")} " +
                  $"act={model.ActIndex + 1}:'{model.ActName}' floor={model.ActFloor} travelEnabled={model.TravelEnabled}");
 
@@ -2244,20 +2265,21 @@ internal static class NMapScreen_Open_Patch
         if (!ModRuntime.Enabled) return true;
         try
         {
+            string via = MiniMapController.OpenCaller();
             // Swallow the map room's synchronous ReopenMap when WE just deliberately closed this frame,
             // so a close actually stays closed instead of instantly bouncing back open.
             if (MiniMapController.SuppressReopenThisFrame())
             {
-                Log.Info("[FlatMap] map open suppressed (deliberate close this frame)");
+                Log.Info($"[FlatMap] map open from {via} suppressed (deliberate close this frame)");
                 __result = __instance;
                 return false;
             }
             if (!FlatMapConfig.PreferFlatMap)
             {
-                Log.Info("[FlatMap] classic map open");
+                Log.Info($"[FlatMap] classic map open from {via}");
                 return true;
             }
-            MiniMapController.OpenFlatFromHook(__instance);
+            MiniMapController.OpenFlatFromHook(__instance, via);
             __result = __instance;
             return false;
         }
@@ -2325,19 +2347,23 @@ internal static class NInputManager_ShortcutKey_Patch
     // non-key event flowing through this path.
     private static bool Prefix(InputEvent __0)
     {
-        if (!ModRuntime.Enabled || __0 is not InputEventKey k || k.IsEcho() || !k.IsPressed())
+        if (!ModRuntime.Enabled || __0 is not InputEventKey k || k.IsEcho())
             return true;
         try
         {
             NInputManager? mgr = NInputManager.Instance;
             if (mgr == null) return true;
-            MiniMapController.AuditKeysOnce(mgr);
+            if (k.IsPressed()) MiniMapController.AuditKeysOnce(mgr);
+            // The map key's release is swallowed as well as its press. Passed on, it becomes a
+            // mega_view_map release, and the top-bar map button runs OnRelease for any release that
+            // follows a press it registered earlier (a mouse press on the icon let go elsewhere
+            // stays registered), which would toggle the map back.
             if (k.Keycode == mgr.GetCurrentHotkey(MegaInput.viewMap))
             {
-                MiniMapController.OnMapKey();
+                if (k.IsPressed()) MiniMapController.OnMapKey();
                 return false;
             }
-            if (k.Keycode == FlatMapMod.ToggleMiniMapKey && MiniMapController.MapShown())
+            if (k.IsPressed() && k.Keycode == FlatMapMod.ToggleMiniMapKey && MiniMapController.MapShown())
             {
                 MiniMapController.OnFlipKey();
                 return false;

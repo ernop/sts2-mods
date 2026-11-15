@@ -201,9 +201,12 @@ Cross-cutting policies in "Invariants" below are mandatory.
 - **[done]** The two checkboxes (**Flat map** / **Compress**) are the saved single source of truth
   for the mode.
 - **[done]** **M** is the only global shortcut (caught on key press in
-  `NInputManager.ProcessHotkeyInput`, where the game turns keys into actions, so the game's own map
-  action never fires for M): from any screen it opens the map in the current mode, or closes it to the
-  **prior view**. **ESC/back** likewise exits the whole map — in flat mode the classic map was never
+  `NInputManager.ProcessHotkeyInput`, where the game turns keys into actions; its release is
+  swallowed there too, so the game's own map action never fires for M, neither press nor release):
+  from any screen it opens the map in the current mode, or closes it to the **prior view**.
+  (2026-11-15: the release used to pass through as a `mega_view_map` release; the map button acts on
+  any release that follows a press it registered earlier, such as a mouse press on the icon let go
+  elsewhere, so that one M press could toggle the map twice and leave it unchanged.) **ESC/back** likewise exits the whole map — in flat mode the classic map was never
   opened, so falling back to it is *structurally impossible*. **F** — only while a map is showing —
   **instantly flips** flat↔classic in place (2026-07-30; was O). The two views are NOT layers:
   they are two display styles of the ONE map slot, so from either view M / the map button / ESC

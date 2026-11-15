@@ -94,6 +94,11 @@ The only game callers of `NMapScreen.Open`:
 
 The button's hotkey is `MegaInput.viewMap`. `NButton.RegisterHotkeys` pushes a pressed and a
 released binding; `NClickableControl.OnReleaseHandler` acts only after the button's own press.
+That press stays registered (`_isPressed`) until a release reaches the button: a mouse press on the
+icon let go elsewhere leaves it set, and the next `mega_view_map` release then runs `OnRelease`. The
+mod swallows both the press and the release of the map key for that reason.
+Every map open writes one log line naming its caller, e.g. `flat open from RunManager.Proceed`,
+`from NTopBarMapButton.OnRelease`, `from MiniMapController.ToggleMap` (the M key).
 Keys become actions in `NInputManager._UnhandledKeyInput`: `ProcessHotkeyInput` for the
 mouse-and-keyboard key map, or `ProcessFkbInput` in keyboard-only mode. Keyboard-only mode starts
 when a direction key is pressed while the `keyboard_mode` preference is on; mouse input ends it.
