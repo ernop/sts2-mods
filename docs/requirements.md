@@ -175,9 +175,16 @@ Cross-cutting policies in "Invariants" below are mandatory.
   classic map's "Flat map" toggle shares the same hard-left x. (A third "Vertical" toggle existed
   briefly on 2026-07-28; retired the same day when vertical became the only orientation.)
 - **[done*]** **The standard map controls always work**: the top-bar map button (next to the deck),
-  the map room, and the M key all toggle the map open/closed in either mode — clicking the top-bar
-  button while the flat page is up closes it (the `NMapScreen.Open` prefix treats an Open() while
-  our capstone is current as the toggle-off it was meant to be).
+  the map room, and the M key all toggle the map open/closed in either mode. A press while the map
+  is shown hides it and returns to the game state underneath; a press while it is hidden shows it.
+  M runs the mod's own toggle. The button keeps the game's `NTopBarMapButton.OnRelease`, which picks
+  close-or-open from `IsOpen()`, i.e. the classic map's `Visible`; a postfix also counts the flat
+  page as open, so a click while it is up closes it through OnRelease's capstone branch.
+  History (2026-11-15): since STS2 v0.113, OnRelease closes every capstone before it calls
+  `Open(isOpenedFromTopBar: true)`. The earlier mechanism, an `Open` prefix that treated Open()
+  while our page was current as a close, therefore never saw the page, and a click closed and
+  reopened it. An `Open()` while the flat page is up is now a no-op, as vanilla `Open()` is while
+  `IsOpen`: `RunManager.Proceed` calls it to start travel whether or not the map is showing.
 - **[done]** **Flat and classic are two co-equal MODES of the one map, never layered** — the
   load-bearing design rule (night-mode/day-mode analogy). The map is a single slot with two
   renderings; exactly one is ever open. Opening renders it *according to the current mode*; the other
@@ -193,8 +200,9 @@ Cross-cutting policies in "Invariants" below are mandatory.
   in place so its "can move here" highlights stay correct.
 - **[done]** The two checkboxes (**Flat map** / **Compress**) are the saved single source of truth
   for the mode.
-- **[done]** **M** is the only global shortcut (one-time `SceneTree.ProcessFrame` connection from an
-  `NGlobalUi._Ready` patch): from any screen it opens the map in the current mode, or closes it to the
+- **[done]** **M** is the only global shortcut (caught on key press in
+  `NInputManager.ProcessHotkeyInput`, where the game turns keys into actions, so the game's own map
+  action never fires for M): from any screen it opens the map in the current mode, or closes it to the
   **prior view**. **ESC/back** likewise exits the whole map — in flat mode the classic map was never
   opened, so falling back to it is *structurally impossible*. **F** — only while a map is showing —
   **instantly flips** flat↔classic in place (2026-07-30; was O). The two views are NOT layers:

@@ -25,6 +25,7 @@ using MegaCrit.Sts2.Core.Nodes.Screens;
 using MegaCrit.Sts2.Core.Nodes.Screens.Capstones;
 using MegaCrit.Sts2.Core.Nodes.Screens.Map;
 using MegaCrit.Sts2.Core.Nodes.Screens.ScreenContext;
+using MegaCrit.Sts2.Core.Nodes.TopBar;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Saves;
 using MegaCrit.Sts2.Core.TestSupport;
@@ -352,7 +353,7 @@ internal static class MiniMapController
     }
 
     // Compact one-line snapshot, for tracing.
-    private static string MapState(string where)
+    internal static string MapState(string where)
     {
         NMapScreen? s = NMapScreen.Instance;
         string cap = NCapstoneContainer.Instance?.CurrentCapstoneScreen?.GetType().Name ?? "none";
@@ -448,7 +449,8 @@ internal static class MiniMapController
     // Open the minimap as a capstone screen — the game parents/shows it, dims the map behind, keeps
     // the top bar, pauses combat, and routes focus/ESC to it, exactly like the deck-view screen.
     // Entry point from the NMapScreen.Open prefix: render the flat page instead of the classic map.
-    // Guarded so repeated Open() calls (e.g. a map room's reopen-on-capstone-close) don't stack.
+    // Open() while the flat page is already up is a no-op, as vanilla Open() is while IsOpen:
+    // RunManager.Proceed calls Open() to start travel whether or not the map is showing.
     internal static void OpenFlatFromHook(NMapScreen screen)
     {
         if (FlatOpen()) return;
@@ -2255,17 +2257,6 @@ internal static class NMapScreen_Open_Patch
                 Log.Info("[FlatMap] classic map open");
                 return true;
             }
-            // The standard map controls must always toggle. The top-bar map button (next to the
-            // deck) calls Open() unconditionally — the classic screen's IsOpen stays false in flat
-            // mode, so the game thinks the map is closed. If our flat page IS the current capstone,
-            // treat this Open() as the toggle-off it was meant to be.
-            if (MiniMapController.FlatShown())
-            {
-                Log.Info("[FlatMap] map open while flat page shown -> toggle off");
-                MiniMapController.CloseMapCompletely();
-                __result = __instance;
-                return false;
-            }
             MiniMapController.OpenFlatFromHook(__instance);
             __result = __instance;
             return false;
@@ -2275,6 +2266,35 @@ internal static class NMapScreen_Open_Patch
             ModRuntime.Disable(nameof(NMapScreen_Open_Patch), ex);
             return true;
         }
+    }
+}
+
+// The top-bar map button picks close-or-open from IsOpen(), which reads only the classic
+// NMapScreen's Visible. The classic map is never opened in flat mode, so without this the button
+// sees "closed" while the flat page is up: its OnRelease then closes every capstone (our page
+// included) and calls Open(), which shows the flat page again. Counted as open, the page is
+// closed by OnRelease's own capstone branch, as a deck view over the classic map would be.
+[HarmonyPatch(typeof(NTopBarMapButton), "IsOpen")]
+internal static class NTopBarMapButton_IsOpen_Patch
+{
+    private static void Postfix(ref bool __result)
+    {
+        if (!ModRuntime.Enabled || __result) return;
+        try { __result = MiniMapController.FlatShown(); }
+        catch (Exception ex) { ModRuntime.Disable(nameof(NTopBarMapButton_IsOpen_Patch), ex); }
+    }
+}
+
+// One trace line per map-button release (a click, or the game's map hotkey when it reaches the
+// button), alongside the M key's "map key" line.
+[HarmonyPatch(typeof(NTopBarMapButton), "OnRelease")]
+internal static class NTopBarMapButton_OnRelease_Patch
+{
+    private static void Prefix()
+    {
+        if (!ModRuntime.Enabled) return;
+        try { Log.Info(MiniMapController.MapState("map button")); }
+        catch (Exception ex) { ModRuntime.Disable(nameof(NTopBarMapButton_OnRelease_Patch), ex); }
     }
 }
 

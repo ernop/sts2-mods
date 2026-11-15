@@ -75,6 +75,8 @@ MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen|OnMapDrawingButtonPressed
 MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen|OnMapErasingButtonPressed
 MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen|OnClearMapDrawingButtonPressed
 MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen|ProcessMouseDrawingEvent
+MegaCrit.Sts2.Core.Nodes.TopBar.NTopBarMapButton|IsOpen
+MegaCrit.Sts2.Core.Nodes.TopBar.NTopBarMapButton|OnRelease
 MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapPoint|Point
 MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapPoint|State
 MegaCrit.Sts2.Core.Nodes.Screens.Map.NNormalMapPoint|_icon

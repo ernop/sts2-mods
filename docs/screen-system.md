@@ -83,6 +83,25 @@ fades a `%Backstop` control's alpha to 0.85 (dimming everything behind), and pau
 do the equivalent via the shared `CapstoneBackstop`. Open call-path: `NMapRoom._Ready()` →
 `NMapScreen.Instance.Open()`; toggled by `NTopBarMapButton` (`NRun.Instance.GlobalUi.TopBar.Map`).
 
+## Who opens and closes the map (checked against v0.113.1)
+The only game callers of `NMapScreen.Open`:
+- `NMapRoom._Ready` and `NMapRoom.ReopenMap`. ReopenMap runs on `NCapstoneContainer.CapstoneClosed`,
+  synchronously, and only in the act-start map room, which also disables the top-bar map button.
+- `RunManager.Proceed`, called by every room's Proceed button: `SetTravelEnabled(true)`, then `Open()`.
+- `NTopBarMapButton.OnRelease`. `IsOpen()` there is `NMapScreen.Instance.Visible`. If open: close
+  the current capstone when one is in use, else `NMapScreen.Close()`. If closed: close any capstone,
+  then `Open(isOpenedFromTopBar: true)`. `Close()` keeps `Visible` true until its 0.35 s fade ends.
+
+The button's hotkey is `MegaInput.viewMap`. `NButton.RegisterHotkeys` pushes a pressed and a
+released binding; `NClickableControl.OnReleaseHandler` acts only after the button's own press.
+Keys become actions in `NInputManager._UnhandledKeyInput`: `ProcessHotkeyInput` for the
+mouse-and-keyboard key map, or `ProcessFkbInput` in keyboard-only mode. Keyboard-only mode starts
+when a direction key is pressed while the `keyboard_mode` preference is on; mouse input ends it.
+
+`NCapstoneContainer.Close()` also re-shows the overlay stack (`ShowOverlays`, skipped while the
+classic map `IsOpen`), so closing the flat page brings back a rewards or card-select overlay that
+was under it.
+
 ## Recipe for a code-built (no-.tscn) screen — what DeckView's minimap does
 1. `class MiniMapScreen : Control, ICapstoneScreen` — implement `ScreenType`
    (`NetScreenType.Map`), `UseSharedBackstop => true`, and a real `DefaultFocusedControl`.

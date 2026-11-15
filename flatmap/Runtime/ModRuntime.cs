@@ -13,6 +13,7 @@ using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
 using MegaCrit.Sts2.Core.Nodes.Screens;
 using MegaCrit.Sts2.Core.Nodes.Screens.Map;
+using MegaCrit.Sts2.Core.Nodes.TopBar;
 
 namespace FlatMap;
 
@@ -155,6 +156,8 @@ internal static class HookCatalog
         Method(typeof(NMapScreen), "OnClearMapDrawingButtonPressed", missing);
         Method(typeof(NMapScreen), "ProcessMouseDrawingEvent", missing);
         Property(typeof(NMapScreen), "Drawings", missing);
+        Method(typeof(NTopBarMapButton), "IsOpen", missing);
+        Method(typeof(NTopBarMapButton), "OnRelease", missing);
 
         Field(typeof(NNormalMapPoint), "_icon", missing);
         Field(typeof(NNormalMapPoint), "_outline", missing);
