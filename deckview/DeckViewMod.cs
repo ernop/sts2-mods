@@ -551,18 +551,15 @@ internal static class Create_Reset_Patch
 }
 
 
-// Smooth mini-card hover (2026-11-16). Vanilla DoCardHoverEffects SNAPS a hovered card to
-// HoverScale and eases it back over 0.5s — fine at vanilla's 0.8 -> 1.0, jarring at mini's
-// 0.48 -> 1.0 (the card more than doubles in one frame and lingers big over its neighbours for
-// half a second). For mini grid cards we run the same effect with a short grow and a quick
-// shrink. Hover tips are created exactly as vanilla does, AT HoverScale, so they align to the
-// full-size card. Everything else (hand, inspect, reward rows, mini off) runs vanilla.
+// Instant mini-card hover (2026-11-16). Vanilla DoCardHoverEffects SNAPS a hovered card to
+// HoverScale but eases it back over 0.5s — at mini's 0.48 -> 1.0 that leaves a full-size card
+// lingering over its neighbours for half a second after the mouse has moved on. For mini grid
+// cards both directions are instant (0s, by request): exactly one card is ever big. Hover tips are
+// created exactly as vanilla does, at HoverScale. Everything else (hand, inspect, reward rows,
+// mini off) runs vanilla.
 [HarmonyPatch(typeof(NCardHolder), "DoCardHoverEffects")]
 internal static class NCardHolder_DoCardHoverEffects_Patch
 {
-    private const double GrowSeconds = 0.09;
-    private const double ShrinkSeconds = 0.12;
-
     private static bool Prefix(NCardHolder __instance, bool isHovered)
     {
         if (!ModRuntime.Enabled) return true;
@@ -573,27 +570,16 @@ internal static class NCardHolder_DoCardHoverEffects_Patch
                 return true;
 
             (GridHoverGate.HoverTweenField.GetValue(__instance) as Tween)?.Kill();
+            GridHoverGate.HoverTweenField.SetValue(__instance, null);
             if (isHovered)
             {
-                var hoverScale = (Vector2)GridHoverGate.HoverScaleGetter.Invoke(__instance, null)!;
+                __instance.Scale = (Vector2)GridHoverGate.HoverScaleGetter.Invoke(__instance, null)!;
                 if (__instance.CardNode?.Visibility == MegaCrit.Sts2.Core.Entities.UI.ModelVisibility.Visible)
-                {
-                    Vector2 from = __instance.Scale;
-                    __instance.Scale = hoverScale;            // align tips to the full-size card
                     GridHoverGate.CreateHoverTipsMethod.Invoke(__instance, null);
-                    __instance.Scale = from;
-                }
-                Tween grow = __instance.CreateTween();
-                grow.TweenProperty(__instance, "scale", hoverScale, GrowSeconds)
-                    .SetEase(Tween.EaseType.Out).SetTrans(Tween.TransitionType.Cubic);
-                GridHoverGate.HoverTweenField.SetValue(__instance, grow);
             }
             else
             {
-                Tween shrink = __instance.CreateTween();
-                shrink.TweenProperty(__instance, "scale", __instance.SmallScale, ShrinkSeconds)
-                      .SetEase(Tween.EaseType.Out).SetTrans(Tween.TransitionType.Cubic);
-                GridHoverGate.HoverTweenField.SetValue(__instance, shrink);
+                __instance.Scale = __instance.SmallScale;
                 GridHoverGate.ClearHoverTipsMethod.Invoke(__instance, null);
             }
             return false;
