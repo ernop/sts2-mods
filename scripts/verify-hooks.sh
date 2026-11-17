@@ -51,6 +51,11 @@ MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder|_isHovered
 MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder|_isFocused
 MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder|_hoverTween
 MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder|RefreshFocusState
+MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder|DoCardHoverEffects
+MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder|OnFocus
+MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder|CreateHoverTips
+MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder|ClearHoverTips
+MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder|HoverScale
 MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder|SmallScale
 MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder|Hitbox
 MegaCrit.Sts2.Core.Nodes.Cards.Holders.NGridCardHolder|Create

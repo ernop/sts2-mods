@@ -57,9 +57,11 @@ page (its own top bar, ESC/back, controller routing).
 **Compaction (the interesting part).** The act is squeezed onto one screen without ever changing
 which rooms connect. The key invariant: every step preserves each floor's *column order*, so the
 crossing count is identical to the game's — compaction can only reassign display lanes, never
-scramble connectivity or overlap two rooms. It's proven offline in `layout/`: a pure `MapLayout`
-algorithm + an invariant checker + metrics + a 500-map property test + captured real levels + viz
-tooling. A runtime assert crashes rather than draw an illegal layout.
+scramble connectivity or overlap two rooms. The layout is solved *exactly*: dynamic programming
+over every legal lane choice of every floor finds the global minimum of steep angles, interior holes,
+and broken lane columns, with the start and boss forced into the same lane. It's proven offline in
+`layout/`: a pure `MapLayout` algorithm + an invariant checker + metrics + a 500-map property test +
+captured real levels + viz tooling. A runtime assert crashes rather than draw an illegal layout.
 
 The page is a real capstone screen (`MiniMapScreen : ICapstoneScreen` via `NCapstoneContainer`),
 exactly like the game's own deck-view screen, and reads live state straight off `NMapScreen`

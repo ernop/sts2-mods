@@ -67,6 +67,9 @@ public static class FlatMapMod
             ? ""
             : $" — NOTE: game '{gameVersion ?? "unknown"}' is not the tested {TestedGameVersion}; re-verify";
         Log.Info($"[FlatMap] loaded — flat map view{versionNote}");
+        if (!MiniMapScreen.InkCirclePaths.Any(p => ResourceLoader.Exists(p)))
+            Log.Info("[FlatMap] WARNING: the visited-room ink circle (map_circle_4) is not at any known path; " +
+                     "visited rooms get the plain fallback ring. Find its new path in the game's .pck.");
     }
 }
 
@@ -1815,9 +1818,12 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
             // (MapTraveledColor for walked legs, MapUntraveledColor for open ones), trimmed so the
             // dashes stop at each node's edge instead of running underneath it.
             Color tp = model.PathTraveled, up = model.PathUntraveled;
-            Color edgeColor = traveled ? new Color(tp.R, tp.G, tp.B, 0.95f)
-                                       : dead ? new Color(up.R, up.G, up.B, 0.18f) : new Color(up.R, up.G, up.B, 0.80f);
-            float edgeWidth = traveled ? 3f : 2.5f;
+            // 2026-11-16: footpaths 60% stronger than vanilla-matched v0.4 — 1.6x the stroke width,
+            // and longer dashes with shorter gaps (ink coverage 50% -> ~70%), so routes read as
+            // connected lines at the one-page scale.
+            Color edgeColor = traveled ? new Color(tp.R, tp.G, tp.B, 1f)
+                                       : dead ? new Color(up.R, up.G, up.B, 0.29f) : new Color(up.R, up.G, up.B, 0.95f);
+            float edgeWidth = (traveled ? 3f : 2.5f) * FootpathStrength;
             Vector2 pa = _positions[from], pb = _positions[to];
             Vector2 dir = (pb - pa).Normalized();
             // Trim to the icons' visual edge (drawn diameter is 2.05 * radius). For vertically-
@@ -1827,9 +1833,9 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
             Vector2 ta = pa + dir * (RadiusOf(a) * 1.025f + 2f);
             Vector2 tb = pb - dir * (RadiusOf(b) * 1.025f + 2f);
             if ((tb - ta).Dot(dir) > 4f)
-                DrawDashedLine(ta, tb, edgeColor, edgeWidth, 8f, true);
+                DrawFootpath(ta, tb, edgeColor, edgeWidth, 10f, 4f);
             else
-                DrawDashedLine(pa, pb, edgeColor, edgeWidth, 4f, true);
+                DrawFootpath(pa, pb, edgeColor, edgeWidth, 5f, 2f);
         }
 
         foreach (MiniNode n in model.Nodes.Values)
@@ -1839,6 +1845,24 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
         }
 
         DrawInfoPanel(font, size, model);
+    }
+
+    private const float FootpathStrength = 1.6f;
+
+    // A dashed leg with independent dash and gap lengths (Godot's DrawDashedLine forces gap ==
+    // dash). Dashes are centred along the leg so both ends look the same.
+    private void DrawFootpath(Vector2 from, Vector2 to, Color color, float width, float dash, float gap)
+    {
+        Vector2 d = to - from;
+        float len = d.Length();
+        if (len <= 0.01f) return;
+        Vector2 dir = d / len;
+        float period = dash + gap;
+        int count = Math.Max(1, (int)((len + gap) / period));
+        float used = count * dash + (count - 1) * gap;
+        float t = (len - used) * 0.5f;
+        for (int i = 0; i < count; i++, t += period)
+            DrawLine(from + dir * t, from + dir * Math.Min(len, t + dash), color, width, true);
     }
 
     // A room is "dead" when you can no longer reach it AND you never visited it — those get greyed.
@@ -2009,14 +2033,28 @@ internal sealed partial class MiniMapScreen : Control, ICapstoneScreen
     //   - Normal map icon is 92×92, so the swirl is ~1.9× the icon — larger, hollow center
     // Drawing the icon ON TOP (caller) keeps the past room type readable inside the swirl.
     private static Texture2D? _inkCircle;
+    private static bool _inkCircleTried;
+    internal static readonly string[] InkCirclePaths =
+    {
+        "res://images/atlases/compressed_atlas.sprites/map_circle_4.tres",  // v0.113+
+        "res://images/atlases/compressed.sprites/map/map_circle_4.tres",    // <= v0.110
+        "res://images/compressed_ui/map_circle_4.png",
+    };
     // Exact TextureRect modulate from map_circle_vfx.tscn (RGB); alpha applied at draw time.
     private static readonly Color InkCircleTint = new(0.141176f, 0.121569f, 0.101961f);
 
     private void DrawInkCircle(Vector2 p, float baseRadius, MapCoord coord)
     {
         Color ink = new(InkCircleTint.R, InkCircleTint.G, InkCircleTint.B, 0.95f);
-        _inkCircle ??= MiniMapController.LoadTexture(
-            "res://images/atlases/compressed.sprites/map/map_circle_4.tres");
+        if (!_inkCircleTried)
+        {
+            // STS2 v0.113 moved the sprite from compressed.sprites/map/ to compressed_atlas.sprites/;
+            // try every known home (newest first, then the raw PNG). Resolve ONCE: a failed load
+            // must not retry per frame (each miss also spams AtlasManager "tpsheet not found").
+            _inkCircleTried = true;
+            foreach (string path in InkCirclePaths)
+                if ((_inkCircle = MiniMapController.LoadTexture(path)) != null) break;
+        }
         // Icon draw diameter is baseRadius * 2.05; vanilla circle/icon ≈ 200/92 ≈ 2.17, then
         // the scene's 0.85..0.90 scale jitter. Match that so the brush sits clearly outside.
         float iconD = baseRadius * 2.05f;

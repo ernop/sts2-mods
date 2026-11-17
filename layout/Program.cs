@@ -41,11 +41,15 @@ internal static class Runner
         "13,4=Shop 13,5=Unknown 14,0=Monster 14,2=Elite 14,4=Monster 14,5=Shop 15,0=RestSite 15,2=RestSite " +
         "15,4=RestSite 16,3=Boss";
 
+    internal const string UnderdocksNodes = "0,3 1,0 1,3 1,4 1,6 2,0 2,1 2,3 2,4 2,6 3,0 3,1 3,3 3,4 3,6 4,0 4,1 4,2 4,4 4,6 5,1 5,2 5,4 5,6 6,0 6,2 6,3 6,6 7,0 7,1 7,3 7,6 8,0 8,2 8,4 8,6 9,0 9,1 9,5 10,0 10,2 10,4 11,0 11,2 11,3 11,4 11,5 12,0 12,1 12,2 12,4 12,6 13,0 13,1 13,2 13,3 13,4 13,6 14,0 14,1 14,2 14,3 14,4 14,6 15,1 15,2 15,3 15,4 15,5 16,3";
+    internal const string UnderdocksEdges = "0,3->1,0 0,3->1,3 0,3->1,4 0,3->1,6 1,0->2,0 1,0->2,1 1,3->2,3 1,4->2,4 1,6->2,6 2,0->3,0 2,0->3,1 2,1->3,1 2,3->3,3 2,4->3,4 2,6->3,6 3,0->4,0 3,1->4,1 3,3->4,2 3,4->4,4 3,6->4,6 4,0->5,1 4,1->5,1 4,1->5,2 4,2->5,2 4,4->5,4 4,6->5,6 5,1->6,0 5,1->6,2 5,2->6,3 5,4->6,3 5,6->6,6 6,0->7,0 6,0->7,1 6,2->7,3 6,3->7,3 6,6->7,6 7,0->8,0 7,1->8,2 7,3->8,2 7,3->8,4 7,6->8,6 8,0->9,0 8,2->9,1 8,4->9,5 8,6->9,5 9,0->10,0 9,1->10,0 9,1->10,2 9,5->10,4 10,0->11,0 10,2->11,2 10,4->11,3 10,4->11,4 10,4->11,5 11,0->12,0 11,0->12,1 11,2->12,2 11,3->12,2 11,4->12,4 11,5->12,6 12,0->13,0 12,1->13,0 12,2->13,1 12,2->13,2 12,2->13,3 12,4->13,4 12,6->13,6 13,0->14,0 13,0->14,1 13,1->14,2 13,2->14,2 13,3->14,3 13,4->14,4 13,6->14,6 14,0->15,1 14,1->15,2 14,2->15,2 14,3->15,3 14,4->15,4 14,6->15,5 15,1->16,3 15,2->16,3 15,3->16,3 15,4->16,3 15,5->16,3";
+
     private static int Main(string[] args)
     {
         if (args.Length > 0 && args[0] == "viz") { CompressionAnalysis(); return 0; }
         if (args.Length > 0 && args[0] == "viz-json") { EmitOptionsJson(); return 0; }
         if (args.Length > 0 && args[0] == "fan") { FanAnalysis(); return 0; }
+        if (args.Length > 1 && args[0] == "viz-file") { EmitFileJson(args[1]); return 0; }
 
         Console.WriteLine("=== FlatMap map-layout tests ===\n");
         CuratedCases();
@@ -176,6 +180,22 @@ internal static class Runner
         Console.WriteLine(sb.ToString());
     }
 
+    // Render a map dump file (3 lines: nodes, edges, types — the CapNodes/CapEdges/CapTypes format,
+    // e.g. produced by scripts/save2dump.py from a run save) through the same option JSON.
+    private static void EmitFileJson(string path)
+    {
+        string[] lines = System.IO.File.ReadAllLines(path);
+        LGraph g = FromDump(lines[0], lines[1]);
+        var types = new Dictionary<(int, int), string>();
+        foreach (string tok in (lines.Length > 2 ? lines[2] : "").Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        {
+            string[] kv = tok.Split('=');
+            string[] rc = kv[0].Split(',');
+            types[(int.Parse(rc[0]), int.Parse(rc[1]))] = kv[1];
+        }
+        Console.WriteLine("{\"maps\":[" + MapJson(System.IO.Path.GetFileNameWithoutExtension(path), g, types) + "]}");
+    }
+
     private static string MapJson(string name, LGraph g, Dictionary<(int, int), string> type)
     {
         string Esc(string s) => s.Replace("\\", "\\\\").Replace("\"", "\\\"");
@@ -193,7 +213,8 @@ internal static class Runner
         string[] opts =
         {
             Option("A. baseline (raw game columns)", g.BaselineLanes()),
-            Option("B. current shipped algorithm", MapLayout.AssignLanes(g)),
+            Option("B. previous greedy algorithm", MapLayout.AssignLanesLegacy(g)),
+            Option("E. exact optimizer (shipped)", MapLayout.AssignLanes(g)),
             Option("C. simple compress (pack toward centerline)", CenterPack(g)),
             Option("D. gentle slope<=1 (flatness-leaning target)", MapLayout.AssignLanesMaxSlope(g, 1)),
         };
@@ -276,11 +297,13 @@ internal static class Runner
     private static void FanPreservationTest(int seedCount)
     {
         Console.WriteLine($"-- fan-direction preservation ({seedCount} random maps with start/boss) --");
-        int flips = 0, avoidableLosses = 0, unavoidable = 0;
+        int flips = 0, avoidableLosses = 0, unavoidable = 0, misaligned = 0;
         for (int seed = 0; seed < seedCount; seed++)
         {
             LGraph g = RandomStsMapWithEnds(new Random(seed));
             int[] lane = MapLayout.AssignLanes(g);
+            // START and BOSS must sit in the same lane (same screen column on the vertical map).
+            if (lane[g.RowsOrdered[0][0]] != lane[g.RowsOrdered[g.RowCount - 1][0]]) misaligned++;
             foreach (bool start in new[] { true, false })
             {
                 int r = start ? 0 : g.RowCount - 1;
@@ -298,6 +321,8 @@ internal static class Runner
         }
         Console.WriteLine($"  flipped fan edges: {flips}   avoidable class losses: {avoidableLosses}   " +
                           $"unavoidable (adjacent-lane \\/, rendered as \\| ): {unavoidable}");
+        Console.WriteLine($"  start/boss in different lanes: {misaligned}");
+        Expect(misaligned == 0, $"{misaligned} maps put the start and the boss in different lanes");
         Expect(flips == 0, $"{flips} fan edges rendered on the WRONG side of the start/boss");
         Expect(avoidableLosses == 0, $"{avoidableLosses} fan direction classes lost though preservable");
     }
@@ -473,6 +498,15 @@ internal static class Runner
         // Legality + never-worse are asserted in Run; lane count is reported. (This particular
         // level's crossing-free minimum happens to be 7 — no adjacent lanes are conflict-free.)
         Run("real-act1-level", FromDump(realNodes, realEdges), (g, baseLen, len, baseLn, ln) => { });
+
+        // 7. The 2026-11-16 Underdocks level (seed X5U66L2DZJX7) whose greedy layout put the boss one
+        //    lane off the start and left an interior pocket. Ends must align; body edges stay gentle.
+        Run("underdocks-2026-11-16", FromDump(UnderdocksNodes, UnderdocksEdges), (g, baseLen, len, baseLn, ln) =>
+        {
+            int[] l = MapLayout.AssignLanes(g);
+            Expect(l[g.RowsOrdered[0][0]] == l[g.RowsOrdered[g.RowCount - 1][0]], "underdocks: start and boss lanes differ");
+            Expect(LayoutMetrics.SteepBodyEdges(g, l) == 0, "underdocks: a body edge jumps 2+ lanes");
+        });
     }
 
     // A case runner: asserts legality (hard) + the never-worse guarantees (hard), prints metrics,

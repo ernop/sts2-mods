@@ -218,24 +218,23 @@ Cross-cutting policies in "Invariants" below are mandatory.
 - **[done]** **Hard invariant:** every step preserves each floor's column order ⇒ the crossing count
   is invariant (== the game's), so compaction can never scramble which rooms connect or overlap two
   rooms. A runtime assert crashes rather than draw an illegal layout.
-- **[done]** **Preference ladder** (lexicographic — each tier breaks ties within the tier above):
-  1. **No steep body spikes** — a body edge never jumps 2+ lanes between floors (a shape vanilla
-     never makes); the start fan-out (row 0) and boss converge-in (last row) are exempt. A spike
-     reads worse than an extra lane.
-  2. **Fewest lanes** — clear whole rows so the act fits one screen.
-  3. **Fewest slope-state changes (bends)** — minimize how many times a path changes slope on
-     straight-through rooms: "up up" beats "up flat up"; `____/\` (there-and-back bump) is bad vs
-     `/‾‾‾‾` (commit to the level and stay); when a change is inevitable, do it once.
-  4. **Shortest total vertical travel**, then **centered** on the midline.
-- **[done]** **Start and boss share one lane** (the centre line) so the map enters mid-left and exits
-  mid-right at the same height. Single-node rows only (skipped on a two-boss floor); pinned after
-  candidate selection, so it's metric-neutral (their fan-out / converge-in edges are already exempt
-  from the slope rules). Implemented in `MapLayout.PinEnds`.
-- **[done]** Method: three candidates — alignment-first, center-anchored min-pack, and a gentle
-  slope-1-body layout — scored by the ladder above (`MapLayout.Better`). Straightener (`HillClimb`)
-  shortens edges, then takes edge-neutral moves that cut bends, then centering. Verified offline:
-  0 crossings added, 0 illegal, 0 regressed across 500 random maps + real captured levels (viz tool
-  in `layout/`, `dotnet run -- viz`). Metrics: `SteepBodyEdges`, `BendCount`, `MaxEdgeSlope`.
+- **[done]** **Exact optimizer (2026-11-16, `OptimalLayout` in `layout/MapLayout.cs`).** Replaced
+  the greedy hill-climb + candidate ladder, which could leave interior pockets and put the boss one
+  lane off the start. Every edge joins adjacent floors and a legal layout is just, per floor, an
+  increasing choice of lanes, so dynamic programming over every choice of every floor (<= 35 per
+  floor on a 7-wide map), every map width, and every shared start/boss lane finds the GLOBAL
+  minimum of:
+  - **Hard:** connectivity untouched (edges never edited; column order kept; no overlap; crossings
+    == vanilla), **start and boss in the same lane**, no fan edge flipped to the other side.
+  - **Soft:** steep angles (convex: a 2-lane body jump costs 8x a 1-lane step; start/boss fans pay
+    a softer d^2), **interior holes** (an empty lane inside a floor's span), **broken lane columns**
+    (same-lane rooms on adjacent floors that are NOT linked, and every place a lane resumes after a
+    gap), a lost fan direction class, and map width.
+  Weights are constants on `OptimalLayout`. The legacy greedy pipeline remains as the fallback for
+  graphs outside the model (an edge skipping a floor) and as option B in the viz tool. Verified
+  offline: 0 illegal, 0 regressed, 0 order leaks, 0 misaligned ends across 500 + 300 random maps
+  and the captured real levels; `dotnet run -- viz-file <dump>` renders any level (make a dump from
+  a run save with `scripts/save2dump.py <current_run.save>`).
 
 ---
 

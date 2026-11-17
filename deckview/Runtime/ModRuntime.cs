@@ -150,6 +150,11 @@ internal static class HookCatalog
         Field(typeof(NCardHolder), "_isHovered", missing);
         Field(typeof(NCardHolder), "_isFocused", missing);
         Field(typeof(NCardHolder), "_hoverTween", missing);
+        Method(typeof(NCardHolder), "DoCardHoverEffects", missing);
+        Method(typeof(NCardHolder), "OnFocus", missing);
+        Method(typeof(NCardHolder), "CreateHoverTips", missing);
+        Method(typeof(NCardHolder), "ClearHoverTips", missing);
+        Property(typeof(NCardHolder), "HoverScale", missing);
         Method(typeof(NGridCardHolder), "Create", missing);
         if (AccessTools.DeclaredPropertyGetter(typeof(NGridCardHolder), "SmallScale") != null)
             missing.Add("NGridCardHolder must inherit SmallScale without overriding it");

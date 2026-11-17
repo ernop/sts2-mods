@@ -371,6 +371,53 @@ internal static class GridHoverGate
     private static readonly MethodInfo RefreshFocusStateMethod =
         Reflect.Method(typeof(NCardHolder), "RefreshFocusState");
 
+    // The game's own hover entry (NGridCardHolder overrides it to also MoveToFrontSafely), its
+    // hover-tip pair, and the protected hover target scale — used by the smooth hover below.
+    internal static readonly MethodInfo OnFocusMethod = Reflect.Method(typeof(NCardHolder), "OnFocus");
+    internal static readonly MethodInfo CreateHoverTipsMethod = Reflect.Method(typeof(NCardHolder), "CreateHoverTips");
+    internal static readonly MethodInfo ClearHoverTipsMethod = Reflect.Method(typeof(NCardHolder), "ClearHoverTips");
+    internal static readonly MethodInfo HoverScaleGetter =
+        AccessTools.PropertyGetter(typeof(NCardHolder), "HoverScale")
+        ?? throw new MissingMemberException(nameof(NCardHolder), "HoverScale");
+    internal static readonly FieldInfo HoverTweenField = HolderHoverTween;
+
+    // Fraction of a card's SMALL slot trimmed from each side before the mouse counts as "on" that
+    // card. The band is hysteresis: an enlarged card overhangs its neighbours, and the mouse can
+    // wander into that overhang (to read the big card) without the neighbour stealing the hover
+    // until it is clearly inside the neighbour's own slot.
+    internal const float SlotInset = 0.15f;
+
+    // Is the mouse inside this holder's SMALL (resting) slot, minus the hysteresis inset? Computed
+    // from the holder's layout position at SmallScale — not its live, tweening scale — so the
+    // answer never changes while cards animate. That stability is what stops the up/down flicker.
+    internal static bool MouseInSlot(NCardHolder holder, float inset)
+    {
+        NClickableControl? hitbox = holder.Hitbox;
+        if (hitbox == null || !hitbox.IsInsideTree() || !hitbox.IsVisibleInTree()
+            || holder.GetParent() is not CanvasItem parent)
+            return false;
+        Viewport? vp = hitbox.GetViewport();
+        if (vp == null)
+            return false;
+        Transform2D hitboxInHolder = holder.GetGlobalTransformWithCanvas().AffineInverse() * hitbox.GetGlobalTransformWithCanvas();
+        Vector2 pivot = holder.PivotOffset;
+        Transform2D restingHolder = new Transform2D(holder.Rotation, holder.SmallScale, 0f, holder.Position + pivot)
+                                    * new Transform2D(0f, -pivot);
+        Transform2D slot = parent.GetGlobalTransformWithCanvas() * restingHolder * hitboxInHolder;
+        Vector2 local = slot.AffineInverse() * vp.GetMousePosition();
+        Vector2 margin = hitbox.Size * inset;
+        return new Rect2(margin, hitbox.Size - 2f * margin).HasPoint(local);
+    }
+
+    // Is the control under the mouse part of this grid (a card, or nothing above it)? Guards the
+    // slot-driven hover from popping a card that sits underneath some other UI (top bar, toggles,
+    // a popup) — Godot's own hover target must be inside the grid.
+    internal static bool PointerOverGrid(NCardGrid grid)
+    {
+        Control? hovered = grid.GetViewport()?.GuiGetHoveredControl();
+        return hovered != null && (hovered == grid || grid.IsAncestorOf(hovered));
+    }
+
     // Controller in use? The reconcile is skipped then, so controller focus still enlarges.
     // The Instance null-check is legitimate state (not error hiding): no controller manager
     // yet => treat as pointer mode. Directional navigation covers controller and keyboard-only.
@@ -459,18 +506,28 @@ internal static class NCardGrid_Process_Reconcile_Patch
             DeckModeController.PollHotkey();
             if (!DeckModeController.MiniEnabled || GridHoverGate.UsingController())
                 return;
-            foreach (NGridCardHolder holder in __instance.CurrentlyDisplayedCardHolders)
+            // Slot-driven hover (2026-11-16): the card whose resting slot holds the mouse is THE
+            // hovered card, regardless of which (possibly enlarged, possibly still-shrinking) card
+            // Godot thinks is on top. Fixed slot rects can't oscillate, so cards no longer pop up
+            // and down as the cursor crosses the grid.
+            var holders = __instance.CurrentlyDisplayedCardHolders.Where(h => h != null).ToList();
+            NGridCardHolder? target = GridHoverGate.PointerOverGrid(__instance)
+                ? holders.FirstOrDefault(h => GridHoverGate.MouseInSlot(h, GridHoverGate.SlotInset))
+                : null;
+            foreach (NGridCardHolder holder in holders)
             {
-                if (holder == null)
+                if (holder == target || GridHoverGate.HolderIsFocused.GetValue(holder) is not true)
                     continue;
-                if (GridHoverGate.HolderIsFocused.GetValue(holder) is not true)
+                // Another card's slot has the mouse -> hand over. Otherwise keep this card while the
+                // mouse is still on its enlarged body (reading it), and drop it once it isn't.
+                if (target == null && GridHoverGate.MouseActuallyInside(holder.Hitbox))
                     continue;
-                if (GridHoverGate.MouseActuallyInside(holder.Hitbox))
-                    continue;
-                Dbg.Once("reconcile", "hover reconcile fired: forcing a stuck-big card back to small " +
-                                       "+ dismissing its popup via the game's own un-hover path");
+                Dbg.Once("reconcile", "hover reconcile fired: un-hovering a card the mouse is not on " +
+                                       "(via the game's own un-hover path)");
                 GridHoverGate.ForceUnhover(holder);
             }
+            if (target != null && GridHoverGate.HolderIsFocused.GetValue(target) is not true)
+                GridHoverGate.OnFocusMethod.Invoke(target, null);
         }
         catch (Exception ex)
         {
@@ -490,5 +547,61 @@ internal static class Create_Reset_Patch
         if (!ModRuntime.Enabled || __result == null) return;
         try { GridHoverGate.ScrubHoverFlags(__result); }
         catch (Exception ex) { ModRuntime.Disable(nameof(Create_Reset_Patch), ex); }
+    }
+}
+
+
+// Smooth mini-card hover (2026-11-16). Vanilla DoCardHoverEffects SNAPS a hovered card to
+// HoverScale and eases it back over 0.5s — fine at vanilla's 0.8 -> 1.0, jarring at mini's
+// 0.48 -> 1.0 (the card more than doubles in one frame and lingers big over its neighbours for
+// half a second). For mini grid cards we run the same effect with a short grow and a quick
+// shrink. Hover tips are created exactly as vanilla does, AT HoverScale, so they align to the
+// full-size card. Everything else (hand, inspect, reward rows, mini off) runs vanilla.
+[HarmonyPatch(typeof(NCardHolder), "DoCardHoverEffects")]
+internal static class NCardHolder_DoCardHoverEffects_Patch
+{
+    private const double GrowSeconds = 0.09;
+    private const double ShrinkSeconds = 0.12;
+
+    private static bool Prefix(NCardHolder __instance, bool isHovered)
+    {
+        if (!ModRuntime.Enabled) return true;
+        try
+        {
+            if (!DeckModeController.MiniEnabled || __instance is not NGridCardHolder
+                || GridHoverGate.IsInFixedCardRow(__instance))
+                return true;
+
+            (GridHoverGate.HoverTweenField.GetValue(__instance) as Tween)?.Kill();
+            if (isHovered)
+            {
+                var hoverScale = (Vector2)GridHoverGate.HoverScaleGetter.Invoke(__instance, null)!;
+                if (__instance.CardNode?.Visibility == MegaCrit.Sts2.Core.Entities.UI.ModelVisibility.Visible)
+                {
+                    Vector2 from = __instance.Scale;
+                    __instance.Scale = hoverScale;            // align tips to the full-size card
+                    GridHoverGate.CreateHoverTipsMethod.Invoke(__instance, null);
+                    __instance.Scale = from;
+                }
+                Tween grow = __instance.CreateTween();
+                grow.TweenProperty(__instance, "scale", hoverScale, GrowSeconds)
+                    .SetEase(Tween.EaseType.Out).SetTrans(Tween.TransitionType.Cubic);
+                GridHoverGate.HoverTweenField.SetValue(__instance, grow);
+            }
+            else
+            {
+                Tween shrink = __instance.CreateTween();
+                shrink.TweenProperty(__instance, "scale", __instance.SmallScale, ShrinkSeconds)
+                      .SetEase(Tween.EaseType.Out).SetTrans(Tween.TransitionType.Cubic);
+                GridHoverGate.HoverTweenField.SetValue(__instance, shrink);
+                GridHoverGate.ClearHoverTipsMethod.Invoke(__instance, null);
+            }
+            return false;
+        }
+        catch (Exception ex)
+        {
+            ModRuntime.Disable(nameof(NCardHolder_DoCardHoverEffects_Patch), ex);
+            return true;
+        }
     }
 }
