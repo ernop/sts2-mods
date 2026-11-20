@@ -49,7 +49,7 @@ Never bundle `sts2.dll`, `GodotSharp.dll`, or `0Harmony.dll`.
 Repository description:
 
 ```text
-Slay the Spire 2 visibility-only mod: zoomed-out deck and map views, plus a clearer whole-act map. Does not change gameplay. Godot/C#/Harmony.
+Two UI-only Slay the Spire 2 mods: One-Page Map (whole act map on one screen) and DeckView (shrunk cards in deck grid views).
 ```
 
 Repository topics:
@@ -71,35 +71,23 @@ Copy into its `content/` directory:
 - per mod: `flatmap/bin/flatmap.dll` + `workshop/content/flatmap.json`, and
   `deckview/bin/deckview.dll` + `workshop/content/deckview.json` (one Workshop item each)
 
-Copy `docs/images/deck-view.png` to the workspace root as `image.png`. Edit the generated
-`workshop.json` to set the title, description, visibility, tags, and change note; use the
-uploader's generated field names as authoritative.
+Copy `docs/images/flat-map.png` (for `flatmap-workshop`) or `docs/images/deck-view.png`
+(for `deckview-workshop`) to the workspace root as `image.png`. Keep each item's `workshop.json`
+in `workshop/<id>-workshop/workshop.json` up to date (title, description, visibility, tags,
+changeNote).
 
 Use:
 
-- **Titles:** `FlatMap — Whole-Act Map on One Screen` and `DeckView — Zoomed-out Deck Views`
+- **Titles:** `One-Page Map — Whole Act on One Screen` and `DeckView — Zoomed-Out Deck Views`
 - **Tags:** `UI`, `Quality of Life`
-- **Preview:** workspace-root `image.png` (already below the 1 MB uploader limit)
-- **Visibility:** private for the first subscription test, then public
-
-Workshop description:
-
-```text
-DeckView zooms out deck-like views and adds a new, clearer whole-act map view for
-Slay the Spire 2. Mini-cards make decks and piles visible at a glance while hover
-restores full size. The optional flat map shows the same routes left-to-right on
-one screen.
-
-Visibility only: DeckView does not change cards, routes, travel rules, combat,
-rewards, saves, or any other gameplay.
-
-Mouse, keyboard, and controller supported. Targets STS2 v0.113.1.
-```
+- **Preview:** workspace-root `image.png` (must stay below the 1 MB uploader limit)
+- **Visibility:** `public` for One-Page Map (`3776618284`), `private` for DeckView (`3776619975`)
 
 Upload with:
 
 ```text
-ModUploader.exe upload -w deckview-workshop
+ModUploader upload -w workshop/flatmap-workshop
+ModUploader upload -w workshop/deckview-workshop
 ```
 
 Subscribe to the private item, remove the local `mods\deckview\` copy, and repeat the smoke
