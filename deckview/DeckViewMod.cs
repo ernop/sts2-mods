@@ -2,20 +2,24 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using Godot;
 using HarmonyLib;
-using MegaCrit.Sts2.Core.ControllerInput;
 using MegaCrit.Sts2.Core.Debug;
+using MegaCrit.Sts2.Core.Entities.UI;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Modding;
-using MegaCrit.Sts2.Core.Nodes.CommonUi;
+using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.Cards;
 using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
+using MegaCrit.Sts2.Core.Nodes.Combat;
+using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
 using MegaCrit.Sts2.Core.Nodes.HoverTips;
 using MegaCrit.Sts2.Core.Nodes.Screens;
+using MegaCrit.Sts2.Core.Nodes.Screens.CardLibrary;
 using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
-using MegaCrit.Sts2.Core.Nodes.Screens.Timeline.UnlockScreens;
+using MegaCrit.Sts2.Core.Nodes.Screens.ScreenContext;
 
 namespace DeckView;
 
@@ -27,41 +31,34 @@ namespace DeckView;
 // make the cards smaller and everything reflows to fit more per screen.
 //
 // Two coordinated levers, kept proportional so layout and rendering stay in sync:
-//   1. NCardGrid._cardSize  — the layout cell size (drives Columns, positions, scroll).
-//   2. NCardHolder.SmallScale — the *rendered* scale of each grid card.
+//   1. NCardGrid._cardSize    — the layout cell size (drives Columns, positions, scroll).
+//   2. NCardHolder.SmallScale — the *rendered* scale of each grid-owned card holder.
 //
-// Both are the vanilla 0.8 baseline (NCard.defaultSize * smallScale / SmallScale).
-// We multiply both by the same factor. Merchant and card-bundle screens read the
-// static `smallScale` field directly (not the SmallScale property), so they are
-// untouched — the shrink is naturally scoped to card-grid views.
+// Scoping uses a strict NCardGrid allowlist (not a screen denylist): only holders created
+// inside NCardGrid.InitGrid or parented under an NCardGrid are shrunk, so combat hands,
+// inspect popups, rewards, unlocks, shops, and any future/modded fixed-row screens stay
+// untouched at full size automatically.
 //
-// A grid card enlarges to HoverScale (1.0) only while the mouse is *actually* over its
-// (small) on-screen rect. See GridHoverGate for why: without that, a card can open
-// "stuck big" from a stale mouse-over the game never cleared.
+// On mini grids in pointer mode, GridHoverGate is the single owner of card hover — rogue
+// mouse-enter/exit signals from enlarged overlapping hitboxes are suppressed so hover never
+// oscillates or opens stuck-big. Controller/keyboard navigation runs 100% vanilla.
 [ModInitializer(nameof(Init))]
 public static class DeckViewMod
 {
     // 0.6 => cards render at 60% of the vanilla deck-view size, matching the STS1 mod.
-    // Lower = smaller cards / more columns. Tune to taste. (Only applied in mini mode —
-    // see DeckModeController; toggle with the hotkey below, state persists across runs.)
     public const float CardScaleFactor = 0.6f;
 
     // Vanilla NCardGrid.CardPadding is a constant 40f. Tighter spacing packs in more
     // columns/rows. Set equal to 40f to keep vanilla spacing.
     public const float CardPadding = 24f;
 
-    // Hotkey to toggle mini <-> large card mode. Checked while a card grid is on screen
-    // (deck view, library, card-select), so open the deck and press it to flip live.
-    // NOTE: this is a plain key (no modifier) because the key is *read*, not consumed —
-    // if it happens to also be bound to something on that screen, both would fire. T isn't
-    // a known deck-screen binding; change here if it clashes.
+    // Hotkey to toggle mini <-> large card mode while a card grid screen is active.
     public const Key ToggleDeckModeKey = Key.T;
 
     // DeckView was built and tested against this game version. On another build, every private
     // hook and every game member our compiled code calls is preflighted before Harmony changes
-    // anything. Missing members disable the mod and leave the game's UI untouched instead of
-    // crashing or leaving a partially patched mod.
-    public const string TestedGameVersion = "v0.113.0";
+    // anything. Missing members disable the mod and leave the game's UI untouched.
+    public const string TestedGameVersion = "v0.113.1";
 
     public static void Init()
     {
@@ -76,26 +73,57 @@ public static class DeckViewMod
     }
 }
 
-// --- Mini/large toggle: persistent state + hotkey + clean live swap -------------------
-//
-// The shrink is not unconditional: every shrink patch is gated on
-// DeckModeController.MiniEnabled, whose value is loaded from (and saved to) a small config
-// file so it survives across runs. Default is mini (matches the mod's original behavior).
-//
-// Toggling has to be a *complete* swap, not a half-state: the layout cell size (_cardSize)
-// determines Columns / positions / scroll and is only computed in ConnectSignals, which
-// runs once. So on toggle we set each live grid's _cardSize from the vanilla base we
-// recorded (times the mode factor) and flag it for reinit — the grid then rebuilds itself
-// (InitGrid) next frame with the new size, padding, and rendered scale all in agreement.
+// --- Allowlist scoping: only NCardGrid-owned holders are ever shrunk ---------------------
+internal static class GridOwnership
+{
+    // Depth counter around NCardGrid.InitGrid() so NGridCardHolder.Create() and the initial
+    // Scale = SmallScale assignment (which happens one line before AddChildSafely) know the
+    // holder belongs to an NCardGrid without needing any screen denylist.
+    [ThreadStatic]
+    private static int _initDepth;
+
+    internal static void EnterGridInit() => _initDepth++;
+    internal static void ExitGridInit() => _initDepth = Math.Max(0, _initDepth - 1);
+
+    internal static bool IsGridOwned(Node node)
+    {
+        if (_initDepth > 0)
+            return true;
+        for (Node? p = node.GetParent(); p != null; p = p.GetParent())
+        {
+            if (p is NCardGrid)
+                return true;
+        }
+        return false;
+    }
+}
+
+[HarmonyPatch(typeof(NCardGrid), "InitGrid", new Type[0])]
+internal static class NCardGrid_InitGrid_Patch
+{
+    private static void Prefix()
+    {
+        if (ModRuntime.Enabled)
+            GridOwnership.EnterGridInit();
+    }
+
+    private static void Finalizer() => GridOwnership.ExitGridInit();
+}
+
+// --- Mini/large toggle: persistent state + guarded hotkey + live swap --------------------
 internal static class DeckModeController
 {
     private static readonly FieldInfo CardSizeField = Reflect.Field(typeof(NCardGrid), "_cardSize");
     private static readonly FieldInfo NeedsReinitField = Reflect.Field(typeof(NCardGrid), "_needsReinit");
+    private static readonly FieldInfo CardsAnimatingOutField = Reflect.Field(typeof(NCardGrid), "_cardsAnimatingOutForSetCards");
+    private static readonly MethodInfo CanScrollGetter = Reflect.PropertyGetter(typeof(NCardGrid), "CanScroll");
+    private static readonly MethodInfo InitGridMethod = Reflect.Method(typeof(NCardGrid), "InitGrid", Type.EmptyTypes);
 
-    // Live grids -> the vanilla (un-shrunk) _cardSize captured at ConnectSignals time.
+    // Live grids -> vanilla (un-shrunk) _cardSize captured at ConnectSignals time.
     private static readonly Dictionary<NCardGrid, Vector2> _grids = new();
 
     private static bool _keyWasDown;
+    private static ulong _lastPollFrame = ulong.MaxValue;
 
     static DeckModeController() => ModRuntime.Disabled += RestoreVanilla;
 
@@ -105,25 +133,59 @@ internal static class DeckModeController
 
     internal static void Unregister(NCardGrid grid) => _grids.Remove(grid);
 
-    // Edge-detected hotkey poll (called each frame a card grid processes).
-    internal static void PollHotkey()
+    // Edge-detected hotkey check, run at most once per frame for the currently active visible grid.
+    // Ignores keystrokes with modifiers, while typing in a text field (e.g. Card Library search),
+    // during transitions, or while a modal/inspect screen sits on top of the grid.
+    internal static void PollHotkey(NCardGrid grid)
     {
+        ulong frame = Engine.GetProcessFrames();
+        if (frame == _lastPollFrame)
+            return;
+
+        if (!IsGridActiveScreen(grid))
+            return;
+
+        _lastPollFrame = frame;
         bool down = Input.IsKeyPressed(DeckViewMod.ToggleDeckModeKey);
-        if (down && !_keyWasDown)
-            Toggle();
+        bool rising = down && !_keyWasDown;
         _keyWasDown = down;
+
+        if (!rising)
+            return;
+        if (!NGame.IsGameFocusedWindow() || NGame.Instance?.Transition?.InTransition == true)
+            return;
+        if (Input.IsKeyPressed(Key.Ctrl) || Input.IsKeyPressed(Key.Alt)
+            || Input.IsKeyPressed(Key.Shift) || Input.IsKeyPressed(Key.Meta))
+            return;
+
+        Control? focused = grid.GetViewport()?.GuiGetFocusOwner();
+        if (focused is LineEdit or TextEdit)
+            return;
+
+        Toggle();
+    }
+
+    // Rebuilds a visible grid that was flagged _needsReinit while CanScroll == false
+    // (vanilla NCardGrid._Process skips _needsReinit whenever CanScroll is false, e.g. while an
+    // upgrade confirmation preview is open over the grid).
+    internal static void FlushLockedReinit(NCardGrid grid)
+    {
+        if ((bool)NeedsReinitField.GetValue(grid)!
+            && !(bool)CanScrollGetter.Invoke(grid, null)!
+            && !(bool)CardsAnimatingOutField.GetValue(grid)!)
+        {
+            InitGridMethod.Invoke(grid, null);
+        }
     }
 
     internal static void Toggle() => SetMini(!DeckViewConfig.MiniDeck);
 
-    // Set mini mode to an explicit value and rebuild every live grid to match. Used by both the
-    // hotkey (Toggle) and the on-screen "Mini-cards" tickbox, so they stay in agreement.
     internal static void SetMini(bool on)
     {
         if (DeckViewConfig.MiniDeck == on)
-            return; // already there — nothing to rebuild
+            return;
         DeckViewConfig.MiniDeck = on;
-        MiniCardsToggle_Patch.SyncAll(on); // keep the on-screen checkbox(es) in agreement with the hotkey
+        MiniCardsToggleRegistry.SyncAll(on);
         float factor = MiniEnabled ? DeckViewMod.CardScaleFactor : 1f;
         Log.Info($"[DeckView] {(MiniEnabled ? "mini" : "large")} deck mode");
 
@@ -135,11 +197,16 @@ internal static class DeckModeController
                 _grids.Remove(grid);
                 continue;
             }
-            // Resize the layout cell from the recorded vanilla base, then let the grid rebuild
-            // itself so columns/positions/scroll and the rendered card scale all flip together.
+            GridHoverGate.ResetGridState(grid);
             CardSizeField.SetValue(grid, kv.Value * factor);
             NeedsReinitField.SetValue(grid, true);
         }
+    }
+
+    private static bool IsGridActiveScreen(NCardGrid grid)
+    {
+        IScreenContext? active = ActiveScreenContext.Instance?.GetCurrentScreen();
+        return active is Node screenNode && (screenNode == grid || screenNode.IsAncestorOf(grid));
     }
 
     private static void RestoreVanilla()
@@ -147,6 +214,7 @@ internal static class DeckModeController
         foreach (KeyValuePair<NCardGrid, Vector2> kv in _grids.ToArray())
         {
             if (!GodotObject.IsInstanceValid(kv.Key)) continue;
+            GridHoverGate.ResetGridState(kv.Key);
             CardSizeField.SetValue(kv.Key, kv.Value);
             NeedsReinitField.SetValue(kv.Key, true);
         }
@@ -154,17 +222,9 @@ internal static class DeckModeController
     }
 }
 
-// Shrink the layout cell size right after the grid computes it in ConnectSignals
-// (vanilla: _cardSize = NCard.defaultSize * NCardHolder.smallScale). Because Columns,
-// row count, positions and scroll limits all derive from _cardSize + CardPadding, the
-// grid reflows to more columns automatically.
 [HarmonyPatch(typeof(NCardGrid), "ConnectSignals")]
 internal static class NCardGrid_ConnectSignals_Patch
 {
-    // Harmony injects the private field `_cardSize` as the parameter `____cardSize`
-    // (three-underscore prefix + the field name, which itself starts with '_'). At postfix
-    // entry it holds the vanilla base size; we record that (so a later live toggle can
-    // recompute from it without re-running ConnectSignals) and shrink only in mini mode.
     private static void Postfix(NCardGrid __instance, ref Vector2 ____cardSize)
     {
         if (!ModRuntime.Enabled) return;
@@ -186,28 +246,21 @@ internal static class NCardGrid_ConnectSignals_Patch
     }
 }
 
-// Drop a grid from the toggle registry when it leaves the tree.
 [HarmonyPatch(typeof(NCardGrid), "_ExitTree")]
 internal static class NCardGrid_ExitTree_Patch
 {
     private static void Postfix(NCardGrid __instance)
     {
         if (!ModRuntime.Enabled) return;
-        try { DeckModeController.Unregister(__instance); }
+        try
+        {
+            DeckModeController.Unregister(__instance);
+            GridHoverGate.ResetGridState(__instance);
+        }
         catch (Exception ex) { ModRuntime.Disable(nameof(NCardGrid_ExitTree_Patch), ex); }
     }
 }
 
-// Shrink the *rendered* scale of grid cards to match the smaller layout cells.
-// Grid holders set their Scale from the SmallScale property (NCardGrid line ~799 and
-// NGridCardHolder line ~104), and the hover-out tween returns to SmallScale, so this
-// keeps rendering consistent — hover still pops to HoverScale (1.0) for readability.
-//
-// Guarded to NGridCardHolder so the shrink is limited to deck-grid cards. This leaves
-// the combat hand (NHandCardHolder — uses its own _targetScale), the inspect popup
-// (NPreviewCardHolder — overrides SmallScale, so this patch never runs for it), and
-// selected-from-hand cards (NSelectedHandCardHolder) at their normal size — matching
-// the STS1 mod's "leave hand/popups/normal rendering alone" scope.
 [HarmonyPatch(typeof(NCardHolder), "SmallScale", MethodType.Getter)]
 internal static class NCardHolder_SmallScale_Patch
 {
@@ -217,7 +270,7 @@ internal static class NCardHolder_SmallScale_Patch
         Vector2 vanilla = __result;
         try
         {
-            if (DeckModeController.MiniEnabled && __instance is NGridCardHolder && !GridHoverGate.IsInFixedCardRow(__instance))
+            if (DeckModeController.MiniEnabled && __instance is NGridCardHolder && GridOwnership.IsGridOwned(__instance))
             {
                 __result *= DeckViewMod.CardScaleFactor;
                 Dbg.Once("smallscale", $"SmallScale shrink active (x{DeckViewMod.CardScaleFactor}) -> {__result}");
@@ -231,7 +284,6 @@ internal static class NCardHolder_SmallScale_Patch
     }
 }
 
-// Tighten the spacing between cards (vanilla getter returns a constant 40f).
 [HarmonyPatch(typeof(NCardGrid), "CardPadding", MethodType.Getter)]
 internal static class NCardGrid_CardPadding_Patch
 {
@@ -252,70 +304,48 @@ internal static class NCardGrid_CardPadding_Patch
     }
 }
 
-// --- Visible "Mini-cards" toggle in the deck-view control cluster -------------------------
+// --- Visible "Mini-cards" toggle across every shrunk card-grid screen --------------------
 //
-// A discoverable on-screen counterpart to the T hotkey, wired to DeckModeController.
+// Attached to:
+//   * NCardsViewScreen (deck view & simple cards view) — stacked cleanly above _showUpgrades
+//   * NCardPileScreen (draw / discard / exhaust piles) — anchored cleanly bottom-left above BackButton
+//   * NCardLibrary — added to the filter tickbox cluster (or placed below _viewMultiplayerCards)
+//   * NCardGridSelectionScreen (all 6 deck/pile card-select screens) — anchored bottom-left &
+//     registered with _peekButton so Peek hides it alongside the grid.
 //
-// We build our OWN control (a self-drawn ToggleSwitch) rather than cloning the game's
-// "View upgrades" NTickbox. Cloning that tickbox does NOT work: it's inlined in the deck-view
-// scene and its visuals are addressed by scene-unique names ("%TickboxVisuals") OWNED BY THE
-// SCREEN, so a duplicated-and-reparented copy can't resolve them — its ConnectSignals throws
-// NullReferenceException, which (as a postfix of NCardsViewScreen.ConnectSignals) aborts the
-// whole deck-screen build and makes every card disappear. ToggleSwitch has no such scene
-// coupling. Placement and sizing are measured from the live "View upgrades" control.
-[HarmonyPatch(typeof(NCardsViewScreen), "ConnectSignals")]
-internal static class MiniCardsToggle_Patch
+// Positions recompute on viewport/screen resize, and focus-neighbor cleanup uses one static list
+// instead of per-open ModRuntime.Disabled lambda subscriptions (no closure leak).
+internal static class MiniCardsToggleRegistry
 {
-    private static readonly FieldInfo ShowUpgradesField = Reflect.Field(typeof(NCardsViewScreen), "_showUpgrades");
     private const string AddedMeta = "minicards_toggle";
+    private const float EdgeMargin = 24f;
+    private const float StackGap = 10f;
 
-    // Live switches, so the T hotkey and the on-screen toggle always agree (SyncAll below).
     private static readonly List<ToggleSwitch> _toggles = new();
+    private static readonly List<(Control Control, NodePath PreviousTop)> _focusRestores = new();
 
-    private static void Postfix(NCardsViewScreen __instance)
+    static MiniCardsToggleRegistry() => ModRuntime.Disabled += RestoreFocusNeighbors;
+
+    internal static bool TryMarkHost(Control host)
     {
-        if (!ModRuntime.Enabled) return;
-        try
-        {
-            if (__instance.HasMeta(AddedMeta))
-                return;
-            __instance.SetMeta(AddedMeta, true);
-
-            var upgrades = ShowUpgradesField.GetValue(__instance) as Control;
-            Control? label = __instance.GetNodeOrNull("%ViewUpgradesLabel") as Control;
-            Control? visuals = __instance.GetNodeOrNull("%TickboxVisuals") as Control;
-            GameStyle.ConfigureToggleMetrics(visuals, label);
-
-            var toggle = new ToggleSwitch("Mini-cards", DeckModeController.MiniEnabled, OnMiniToggled)
-            {
-                Name = "MiniCardsToggle",
-                ZIndex = 50,
-            };
-            __instance.AddChild(toggle);
-            if (upgrades != null && GodotObject.IsInstanceValid(upgrades))
-            {
-                toggle.GlobalPosition = upgrades.GlobalPosition - new Vector2(0f, toggle.Size.Y + 8f);
-                NodePath previousTop = upgrades.FocusNeighborTop;
-                toggle.FocusNeighborBottom = toggle.GetPathTo(upgrades);
-                upgrades.FocusNeighborTop = upgrades.GetPathTo(toggle);
-                ModRuntime.Disabled += () =>
-                {
-                    if (GodotObject.IsInstanceValid(upgrades))
-                        upgrades.FocusNeighborTop = previousTop;
-                };
-            }
-            _toggles.Add(toggle);
-            Log.Info($"[DeckView] mini-cards toggle at {toggle.GlobalPosition} size={toggle.Size} " +
-                     $"font={GameStyle.ToggleFontSize}px box={GameStyle.ToggleBoxSize:0.#}px");
-        }
-        catch (Exception ex)
-        {
-            ModRuntime.Disable(nameof(MiniCardsToggle_Patch), ex);
-        }
+        if (host.HasMeta(AddedMeta))
+            return false;
+        host.SetMeta(AddedMeta, true);
+        return true;
     }
 
-    // Reflect the current mode onto every live switch WITHOUT re-firing the callback (so a T-key
-    // flip updates the on-screen toggle, and vice-versa, with no feedback loop). Called by SetMini.
+    internal static ToggleSwitch CreateToggle()
+    {
+        var toggle = new ToggleSwitch("Mini-cards", DeckModeController.MiniEnabled, OnMiniToggled)
+        {
+            Name = "MiniCardsToggle",
+        };
+        _toggles.RemoveAll(t => !GodotObject.IsInstanceValid(t));
+        _toggles.Add(toggle);
+        toggle.Connect(Node.SignalName.TreeExiting, Callable.From(() => _toggles.Remove(toggle)));
+        return toggle;
+    }
+
     internal static void SyncAll(bool on)
     {
         _toggles.RemoveAll(t => !GodotObject.IsInstanceValid(t));
@@ -323,222 +353,501 @@ internal static class MiniCardsToggle_Patch
             t.SetOn(on);
     }
 
+    internal static void AnchorAboveControl(Control host, ToggleSwitch toggle, Control? anchor, bool wireFocus)
+    {
+        host.AddChild(toggle);
+        void Reposition()
+        {
+            if (!GodotObject.IsInstanceValid(host) || !GodotObject.IsInstanceValid(toggle) || !host.IsInsideTree())
+                return;
+            if (anchor != null && GodotObject.IsInstanceValid(anchor) && anchor.IsVisibleInTree())
+            {
+                Vector2 anchorLocal = host.GetGlobalTransformWithCanvas().AffineInverse() * anchor.GlobalPosition;
+                float maxX = Mathf.Max(EdgeMargin, host.Size.X - toggle.Size.X - EdgeMargin);
+                float maxY = Mathf.Max(EdgeMargin, host.Size.Y - toggle.Size.Y - EdgeMargin);
+                float x = Mathf.Clamp(anchorLocal.X, EdgeMargin, maxX);
+                float y = Mathf.Clamp(anchorLocal.Y - toggle.Size.Y - StackGap, EdgeMargin, maxY);
+                toggle.Position = new Vector2(x, y);
+            }
+            else
+            {
+                toggle.Position = new Vector2(EdgeMargin, Mathf.Max(EdgeMargin, host.Size.Y - toggle.Size.Y - EdgeMargin));
+            }
+        }
+
+        if (wireFocus && anchor != null && GodotObject.IsInstanceValid(anchor))
+        {
+            NodePath previousTop = anchor.FocusNeighborTop;
+            toggle.FocusNeighborBottom = toggle.GetPathTo(anchor);
+            anchor.FocusNeighborTop = anchor.GetPathTo(toggle);
+            _focusRestores.RemoveAll(r => !GodotObject.IsInstanceValid(r.Control));
+            _focusRestores.Add((anchor, previousTop));
+        }
+
+        Reposition();
+        Callable.From(Reposition).CallDeferred();
+        host.Connect(Control.SignalName.Resized, Callable.From(Reposition));
+    }
+
+    internal static void AttachInLibrary(Control host, ToggleSwitch toggle, Control? siblingTickbox)
+    {
+        if (siblingTickbox != null && GodotObject.IsInstanceValid(siblingTickbox)
+            && siblingTickbox.GetParent() is BoxContainer box)
+        {
+            box.AddChild(toggle);
+            return;
+        }
+
+        host.AddChild(toggle);
+        void Reposition()
+        {
+            if (!GodotObject.IsInstanceValid(host) || !GodotObject.IsInstanceValid(toggle) || !host.IsInsideTree())
+                return;
+            if (siblingTickbox != null && GodotObject.IsInstanceValid(siblingTickbox) && siblingTickbox.IsVisibleInTree())
+            {
+                Vector2 local = host.GetGlobalTransformWithCanvas().AffineInverse() * siblingTickbox.GlobalPosition;
+                float y = local.Y + siblingTickbox.Size.Y + StackGap;
+                if (y + toggle.Size.Y > host.Size.Y - EdgeMargin)
+                    y = Mathf.Max(EdgeMargin, local.Y - toggle.Size.Y - StackGap);
+                toggle.Position = new Vector2(Mathf.Max(EdgeMargin, local.X), y);
+            }
+            else
+            {
+                toggle.Position = new Vector2(EdgeMargin, Mathf.Max(EdgeMargin, host.Size.Y - toggle.Size.Y - EdgeMargin));
+            }
+        }
+
+        Reposition();
+        Callable.From(Reposition).CallDeferred();
+        host.Connect(Control.SignalName.Resized, Callable.From(Reposition));
+    }
+
     private static void OnMiniToggled(bool pressed) => DeckModeController.SetMini(pressed);
+
+    private static void RestoreFocusNeighbors()
+    {
+        foreach ((Control control, NodePath prevTop) in _focusRestores)
+        {
+            if (GodotObject.IsInstanceValid(control))
+                control.FocusNeighborTop = prevTop;
+        }
+        _focusRestores.Clear();
+    }
 }
 
-// --- Hover reconcile: a grid card is "big" only while the mouse is really over it ------
+[HarmonyPatch(typeof(NCardsViewScreen), "ConnectSignals")]
+internal static class NCardsViewScreen_Toggle_Patch
+{
+    private static readonly FieldInfo ShowUpgradesField = Reflect.Field(typeof(NCardsViewScreen), "_showUpgrades");
+
+    private static void Postfix(NCardsViewScreen __instance)
+    {
+        if (!ModRuntime.Enabled) return;
+        try
+        {
+            if (!MiniCardsToggleRegistry.TryMarkHost(__instance))
+                return;
+
+            var upgrades = ShowUpgradesField.GetValue(__instance) as Control;
+            Control? label = __instance.GetNodeOrNull("%ViewUpgradesLabel") as Control;
+            Control? visuals = __instance.GetNodeOrNull("%TickboxVisuals") as Control;
+            GameStyle.ConfigureToggleMetrics(visuals, label);
+
+            ToggleSwitch toggle = MiniCardsToggleRegistry.CreateToggle();
+            MiniCardsToggleRegistry.AnchorAboveControl(__instance, toggle, upgrades, wireFocus: true);
+            Log.Info($"[DeckView] mini-cards toggle on {__instance.GetType().Name} " +
+                     $"font={GameStyle.ToggleFontSize}px box={GameStyle.ToggleBoxSize:0.#}px");
+        }
+        catch (Exception ex)
+        {
+            ModRuntime.Disable(nameof(NCardsViewScreen_Toggle_Patch), ex);
+        }
+    }
+}
+
+[HarmonyPatch(typeof(NCardPileScreen), "_Ready")]
+internal static class NCardPileScreen_Toggle_Patch
+{
+    private static readonly FieldInfo BackButtonField = Reflect.Field(typeof(NCardPileScreen), "_backButton");
+
+    private static void Postfix(NCardPileScreen __instance)
+    {
+        if (!ModRuntime.Enabled) return;
+        try
+        {
+            if (!MiniCardsToggleRegistry.TryMarkHost(__instance))
+                return;
+            var backButton = BackButtonField.GetValue(__instance) as Control;
+            ToggleSwitch toggle = MiniCardsToggleRegistry.CreateToggle();
+            MiniCardsToggleRegistry.AnchorAboveControl(__instance, toggle, backButton, wireFocus: false);
+        }
+        catch (Exception ex)
+        {
+            ModRuntime.Disable(nameof(NCardPileScreen_Toggle_Patch), ex);
+        }
+    }
+}
+
+[HarmonyPatch(typeof(NCardLibrary), "_Ready")]
+internal static class NCardLibrary_Toggle_Patch
+{
+    private static readonly FieldInfo ViewUpgradesField = Reflect.Field(typeof(NCardLibrary), "_viewUpgrades");
+    private static readonly FieldInfo ViewMultiplayerField = Reflect.Field(typeof(NCardLibrary), "_viewMultiplayerCards");
+
+    private static void Postfix(NCardLibrary __instance)
+    {
+        if (!ModRuntime.Enabled) return;
+        try
+        {
+            if (!MiniCardsToggleRegistry.TryMarkHost(__instance))
+                return;
+
+            var upgrades = ViewUpgradesField.GetValue(__instance) as Control;
+            var multiplayer = ViewMultiplayerField.GetValue(__instance) as Control;
+            Control? visuals = upgrades?.GetNodeOrNull("%TickboxVisuals") as Control;
+            Control? label = upgrades?.GetNodeOrNull<Control>("%Label");
+            if (visuals != null || label != null)
+                GameStyle.ConfigureToggleMetrics(visuals, label);
+
+            ToggleSwitch toggle = MiniCardsToggleRegistry.CreateToggle();
+            MiniCardsToggleRegistry.AttachInLibrary(__instance, toggle, multiplayer ?? upgrades);
+        }
+        catch (Exception ex)
+        {
+            ModRuntime.Disable(nameof(NCardLibrary_Toggle_Patch), ex);
+        }
+    }
+}
+
+[HarmonyPatch(typeof(NCardGridSelectionScreen), "ConnectSignalsAndInitGrid")]
+internal static class NCardGridSelectionScreen_Toggle_Patch
+{
+    private static readonly FieldInfo PeekButtonField = Reflect.Field(typeof(NCardGridSelectionScreen), "_peekButton");
+
+    private static void Postfix(NCardGridSelectionScreen __instance)
+    {
+        if (!ModRuntime.Enabled) return;
+        try
+        {
+            if (!MiniCardsToggleRegistry.TryMarkHost(__instance))
+                return;
+
+            var peekButton = PeekButtonField.GetValue(__instance) as NPeekButton;
+            ToggleSwitch toggle = MiniCardsToggleRegistry.CreateToggle();
+            MiniCardsToggleRegistry.AnchorAboveControl(__instance, toggle, peekButton, wireFocus: false);
+            if (peekButton != null && GodotObject.IsInstanceValid(peekButton))
+                peekButton.AddTargets(toggle);
+        }
+        catch (Exception ex)
+        {
+            ModRuntime.Disable(nameof(NCardGridSelectionScreen_Toggle_Patch), ex);
+        }
+    }
+}
+
+// --- Unified single-owner hover on mini grids --------------------------------------------
 //
-// Symptom this fixes: open the deck view (press "d") and one card sometimes shows at full
-// size while every other card is correctly shrunk. It's NOT under the mouse — it's the
-// card that would have been under the cursor at *vanilla* card size — and it stays big
-// until you mouse over it and off again.
+// On mini grids in pointer mode, enlarged cards (1.0x) overhang neighbours' hitboxes, so
+// Godot's mouse-enter/exit on the live enlarged hitbox fights with slot geometry and can
+// leave cards stuck enlarged after layout animations.
 //
-// Root cause: while the grid lays out / animates in, a card's hitbox briefly passes under
-// the (stationary) mouse, so Godot fires MouseEntered and the card pops to HoverScale.
-// The card then settles into its small position away from the cursor, but Godot does NOT
-// fire MouseExited for a control that moves out from under a stationary mouse — so the
-// hitbox's _isHovered stays true and nothing shrinks the card back. Trusting _isHovered
-// can't fix this; it IS the stale value.
-//
-// Fix: every frame the grid processes, reconcile against ground truth. For each displayed
-// holder that's currently enlarged (_isFocused), if the mouse isn't actually inside the
-// holder's real (scaled) on-screen rect, force it back to un-hovered SmallScale. A genuine
-// mouse-over keeps the card big (the game's own MouseEntered path still enlarges it); when
-// you move off, the game's normal MouseExited shrink runs (a smooth tween, left untouched
-// because _isFocused is already false by then). Only the stuck/stale case is corrected.
-//
-// This also covers the deck view grab-focusing a default card on open (enlarge with no
-// mouse on it): that card is _isFocused with the mouse elsewhere, so it's reconciled small
-// within a frame. Skipped while a controller is in use, so controller focus still enlarges.
+// Solution: suppress rogue mouse-triggered NGridCardHolder.OnFocus / NCardHolder.OnUnfocus
+// while in mini pointer mode, and let GridHoverGate drive both hover and unhover atomically
+// from each card's resting SmallScale slot (with hysteresis while reading an enlarged card).
+// Controller / keyboard navigation bypasses GridHoverGate completely and runs 100% vanilla.
 internal static class GridHoverGate
 {
-    // NClickableControl's *mouse* hover flag (set by MouseEntered/Exited). We clear the
-    // stale value when correcting a card; we do NOT read it to decide (that's the bug).
-    private static readonly FieldInfo HitboxMouseHovered =
-        Reflect.Field(typeof(NClickableControl), "_isHovered");
+    private sealed class GridHoverState
+    {
+        public NGridCardHolder? Hovered;
+        public Vector2 LastMouse = new(float.NaN, float.NaN);
+        public float LastScrollY = float.NaN;
+        public bool LastPointerOver;
+    }
 
-    // The holder's own hover/focus bookkeeping (base NCardHolder).
+    private static readonly ConditionalWeakTable<NCardGrid, GridHoverState> States = new();
+
+    private static readonly FieldInfo CardRowsField = Reflect.Field(typeof(NCardGrid), "_cardRows");
+    private static readonly FieldInfo ScrollContainerField = Reflect.Field(typeof(NCardGrid), "_scrollContainer");
+    private static readonly FieldInfo HitboxMouseHovered = Reflect.Field(typeof(NClickableControl), "_isHovered");
     private static readonly FieldInfo HolderIsHovered = Reflect.Field(typeof(NCardHolder), "_isHovered");
     internal static readonly FieldInfo HolderIsFocused = Reflect.Field(typeof(NCardHolder), "_isFocused");
-    private static readonly FieldInfo HolderHoverTween = Reflect.Field(typeof(NCardHolder), "_hoverTween");
+    internal static readonly FieldInfo HoverTweenField = Reflect.Field(typeof(NCardHolder), "_hoverTween");
 
-    // The game's own un-hover entry point. RefreshFocusState() re-reads CanBeFocused (== the
-    // holder's _isHovered) and, when it changed, flips _isFocused and calls DoCardHoverEffects,
-    // which on false: kills the hover tween, starts the normal shrink tween, AND calls
-    // ClearHoverTips() -> NHoverTipSet.Remove(this). Driving this is how we dismiss a card's
-    // popup EXACTLY the way vanilla does (both keyword tips and related-card previews live in
-    // the one NHoverTipSet keyed by the holder).
-    private static readonly MethodInfo RefreshFocusStateMethod =
-        Reflect.Method(typeof(NCardHolder), "RefreshFocusState");
-
-    // The game's own hover entry (NGridCardHolder overrides it to also MoveToFrontSafely), its
-    // hover-tip pair, and the protected hover target scale — used by the smooth hover below.
-    internal static readonly MethodInfo OnFocusMethod = Reflect.Method(typeof(NCardHolder), "OnFocus");
+    private static readonly MethodInfo OnFocusMethod = Reflect.Method(typeof(NGridCardHolder), "OnFocus");
+    private static readonly MethodInfo OnUnfocusMethod = Reflect.Method(typeof(NCardHolder), "OnUnfocus");
     internal static readonly MethodInfo CreateHoverTipsMethod = Reflect.Method(typeof(NCardHolder), "CreateHoverTips");
     internal static readonly MethodInfo ClearHoverTipsMethod = Reflect.Method(typeof(NCardHolder), "ClearHoverTips");
-    internal static readonly MethodInfo HoverScaleGetter =
-        AccessTools.PropertyGetter(typeof(NCardHolder), "HoverScale")
-        ?? throw new MissingMemberException(nameof(NCardHolder), "HoverScale");
-    internal static readonly FieldInfo HoverTweenField = HolderHoverTween;
+    internal static readonly MethodInfo HoverScaleGetter = Reflect.PropertyGetter(typeof(NCardHolder), "HoverScale");
 
-    // Fraction of a card's SMALL slot trimmed from each side before the mouse counts as "on" that
-    // card. The band is hysteresis: an enlarged card overhangs its neighbours, and the mouse can
-    // wander into that overhang (to read the big card) without the neighbour stealing the hover
-    // until it is clearly inside the neighbour's own slot.
+    // Re-entrancy flag distinguishing our own authoritative OnFocus/OnUnfocus calls from rogue
+    // Godot hitbox mouse signals.
+    internal static bool IsDrivingHover { get; private set; }
+
+    // Fraction of a card's resting small slot trimmed on each side before the pointer counts
+    // as claiming that card (hysteresis so the pointer can inspect an enlarged card's overhang).
     internal const float SlotInset = 0.15f;
 
-    // Is the mouse inside this holder's SMALL (resting) slot, minus the hysteresis inset? Computed
-    // from the holder's layout position at SmallScale — not its live, tweening scale — so the
-    // answer never changes while cards animate. That stability is what stops the up/down flicker.
-    internal static bool MouseInSlot(NCardHolder holder, float inset)
+    internal static bool UsingController() =>
+        NGame.Instance?.InputManager?.ControllerManager?.IsUsingDirectionalNavigation ?? false;
+
+    internal static void ResetGridState(NCardGrid grid)
+    {
+        if (States.TryGetValue(grid, out GridHoverState? state))
+        {
+            state.Hovered = null;
+            state.LastMouse = new Vector2(float.NaN, float.NaN);
+            state.LastScrollY = float.NaN;
+            state.LastPointerOver = false;
+        }
+    }
+
+    internal static void Update(NCardGrid grid)
+    {
+        if (!DeckModeController.MiniEnabled || UsingController())
+            return;
+
+        Viewport? vp = grid.GetViewport();
+        if (vp == null)
+            return;
+
+        GridHoverState state = States.GetOrCreateValue(grid);
+        bool pointerOver = PointerOverGrid(grid, vp);
+        Vector2 mouse = vp.GetMousePosition();
+        float scrollY = ScrollContainerField.GetValue(grid) is Control sc && GodotObject.IsInstanceValid(sc)
+            ? sc.Position.Y
+            : 0f;
+
+        if (!pointerOver)
+        {
+            if (state.Hovered != null || state.LastPointerOver)
+                ClearAllHovered(grid, state);
+            state.LastPointerOver = false;
+            state.LastMouse = mouse;
+            state.LastScrollY = scrollY;
+            return;
+        }
+
+        // Fast path: mouse and scroll did not move and our tracked hover is still valid & focused.
+        bool moved = mouse != state.LastMouse || scrollY != state.LastScrollY || !state.LastPointerOver;
+        state.LastMouse = mouse;
+        state.LastScrollY = scrollY;
+        state.LastPointerOver = true;
+
+        if (!moved && state.Hovered != null && GodotObject.IsInstanceValid(state.Hovered)
+            && state.Hovered.IsInsideTree() && state.Hovered.IsVisibleInTree()
+            && HolderIsFocused.GetValue(state.Hovered) is true
+            && MouseActuallyInside(state.Hovered.Hitbox, mouse))
+        {
+            return;
+        }
+
+        if (CardRowsField.GetValue(grid) is not List<List<NGridCardHolder>> rows)
+            return;
+
+        NGridCardHolder? target = null;
+        for (int r = 0; r < rows.Count && target == null; r++)
+        {
+            List<NGridCardHolder> row = rows[r];
+            for (int c = 0; c < row.Count; c++)
+            {
+                NGridCardHolder h = row[c];
+                if (h != null && GodotObject.IsInstanceValid(h) && MouseInSlot(h, mouse, SlotInset))
+                {
+                    target = h;
+                    break;
+                }
+            }
+        }
+
+        NGridCardHolder? kept = null;
+        for (int r = 0; r < rows.Count; r++)
+        {
+            List<NGridCardHolder> row = rows[r];
+            for (int c = 0; c < row.Count; c++)
+            {
+                NGridCardHolder holder = row[c];
+                if (holder == null || !GodotObject.IsInstanceValid(holder) || holder == target)
+                    continue;
+                if (HolderIsFocused.GetValue(holder) is not true)
+                    continue;
+
+                // No other card's slot claimed the cursor: keep reading this card while still on its enlarged body.
+                if (target == null && MouseActuallyInside(holder.Hitbox, mouse))
+                {
+                    kept = holder;
+                    continue;
+                }
+
+                DriveUnhover(holder);
+            }
+        }
+
+        if (target != null)
+        {
+            if (HolderIsFocused.GetValue(target) is not true)
+                DriveHover(target);
+            state.Hovered = target;
+        }
+        else
+        {
+            state.Hovered = kept;
+        }
+    }
+
+    private static void ClearAllHovered(NCardGrid grid, GridHoverState state)
+    {
+        if (state.Hovered != null && GodotObject.IsInstanceValid(state.Hovered))
+            DriveUnhover(state.Hovered);
+        state.Hovered = null;
+
+        if (CardRowsField.GetValue(grid) is not List<List<NGridCardHolder>> rows)
+            return;
+        for (int r = 0; r < rows.Count; r++)
+        {
+            List<NGridCardHolder> row = rows[r];
+            for (int c = 0; c < row.Count; c++)
+            {
+                NGridCardHolder h = row[c];
+                if (h != null && GodotObject.IsInstanceValid(h) && HolderIsFocused.GetValue(h) is true)
+                    DriveUnhover(h);
+            }
+        }
+    }
+
+    private static void DriveHover(NGridCardHolder holder)
+    {
+        IsDrivingHover = true;
+        try
+        {
+            if (holder.Hitbox is NClickableControl hitbox)
+                HitboxMouseHovered.SetValue(hitbox, true);
+            OnFocusMethod.Invoke(holder, null);
+        }
+        finally
+        {
+            IsDrivingHover = false;
+        }
+    }
+
+    private static void DriveUnhover(NCardHolder holder)
+    {
+        IsDrivingHover = true;
+        try
+        {
+            if (holder.Hitbox is NClickableControl hitbox)
+                HitboxMouseHovered.SetValue(hitbox, false);
+            OnUnfocusMethod.Invoke(holder, null);
+            NHoverTipSet.Remove(holder);
+        }
+        finally
+        {
+            IsDrivingHover = false;
+        }
+    }
+
+    private static bool MouseInSlot(NCardHolder holder, Vector2 mouse, float inset)
     {
         NClickableControl? hitbox = holder.Hitbox;
         if (hitbox == null || !hitbox.IsInsideTree() || !hitbox.IsVisibleInTree()
             || holder.GetParent() is not CanvasItem parent)
-            return false;
-        Viewport? vp = hitbox.GetViewport();
-        if (vp == null)
             return false;
         Transform2D hitboxInHolder = holder.GetGlobalTransformWithCanvas().AffineInverse() * hitbox.GetGlobalTransformWithCanvas();
         Vector2 pivot = holder.PivotOffset;
         Transform2D restingHolder = new Transform2D(holder.Rotation, holder.SmallScale, 0f, holder.Position + pivot)
                                     * new Transform2D(0f, -pivot);
         Transform2D slot = parent.GetGlobalTransformWithCanvas() * restingHolder * hitboxInHolder;
-        Vector2 local = slot.AffineInverse() * vp.GetMousePosition();
+        Vector2 local = slot.AffineInverse() * mouse;
         Vector2 margin = hitbox.Size * inset;
         return new Rect2(margin, hitbox.Size - 2f * margin).HasPoint(local);
     }
 
-    // Is the control under the mouse part of this grid (a card, or nothing above it)? Guards the
-    // slot-driven hover from popping a card that sits underneath some other UI (top bar, toggles,
-    // a popup) — Godot's own hover target must be inside the grid.
-    internal static bool PointerOverGrid(NCardGrid grid)
+    private static bool PointerOverGrid(NCardGrid grid, Viewport vp)
     {
-        Control? hovered = grid.GetViewport()?.GuiGetHoveredControl();
+        Control? hovered = vp.GuiGetHoveredControl();
         return hovered != null && (hovered == grid || grid.IsAncestorOf(hovered));
     }
 
-    // Controller in use? The reconcile is skipped then, so controller focus still enlarges.
-    // The Instance null-check is legitimate state (not error hiding): no controller manager
-    // yet => treat as pointer mode. Directional navigation covers controller and keyboard-only.
-    internal static bool UsingController() => NControllerManager.Instance?.IsUsingDirectionalNavigation ?? false;
-
-    // Is the mouse genuinely inside this hitbox's current on-screen rect? Uses the full
-    // canvas transform (which includes the holder's scale), so it's correct whether the
-    // card is drawn small or popped to full size — unlike the stale _isHovered flag.
-    internal static bool MouseActuallyInside(NClickableControl? hitbox)
+    private static bool MouseActuallyInside(NClickableControl? hitbox, Vector2 mouse)
     {
         if (hitbox == null || !hitbox.IsInsideTree() || !hitbox.IsVisibleInTree())
             return false;
-        Viewport? vp = hitbox.GetViewport();
-        if (vp == null)
-            return false;
-        Vector2 local = hitbox.GetGlobalTransformWithCanvas().AffineInverse() * vp.GetMousePosition();
+        Vector2 local = hitbox.GetGlobalTransformWithCanvas().AffineInverse() * mouse;
         return new Rect2(Vector2.Zero, hitbox.Size).HasPoint(local);
     }
 
-    // Drive a stuck-enlarged holder back to the clean, un-hovered small state — using the
-    // game's OWN un-hover path so the shrink and, crucially, the popup dismissal are identical
-    // to what happens when you normally move the mouse off a card. (The previous version
-    // hand-rolled the shrink and called NHoverTipSet.Remove directly; that bypassed the game's
-    // ClearHoverTips path and could leave the keyword tip / related-card preview floating.)
-    internal static void ForceUnhover(NCardHolder holder)
-    {
-        // Clear the stale ground-truth mouse bit on the hitbox (the ROOT of the stuck-hover
-        // bug: Godot never fired MouseExited, so this stayed true). Must clear it or (a) the
-        // holder can't be focused again on a real future hover, and (b) RefreshFocusState below
-        // wouldn't see "not hovered".
-        if (holder.Hitbox is NClickableControl hitbox)
-            HitboxMouseHovered.SetValue(hitbox, false);
-        HolderIsHovered.SetValue(holder, false);
-
-        // Now run the game's real un-hover: RefreshFocusState() sees _isHovered==false, flips
-        // _isFocused to false, and calls DoCardHoverEffects(false) -> normal shrink tween +
-        // ClearHoverTips() -> NHoverTipSet.Remove(this). This frees the whole tip set (keyword
-        // tips AND related-card previews) exactly as vanilla does. The reconcile only calls us
-        // for holders that are currently _isFocused, so this always drives the full dismissal.
-        RefreshFocusStateMethod.Invoke(holder, null);
-
-        // Safety net for any path where the holder was already un-focused but a tip set is
-        // still registered under it (RefreshFocusState would short-circuit). Idempotent.
-        NHoverTipSet.Remove(holder);
-    }
-
-    // Lightweight flag scrub for pooled reuse (NGridCardHolder.Create). The holder may not be
-    // in the tree yet, so we must NOT start a tween or drive DoCardHoverEffects — just clear
-    // any stale hover/focus bits and drop a stray tip so a recycled card starts clean.
     internal static void ScrubHoverFlags(NCardHolder holder)
     {
         if (holder.Hitbox is NClickableControl hitbox)
             HitboxMouseHovered.SetValue(hitbox, false);
         HolderIsHovered.SetValue(holder, false);
         HolderIsFocused.SetValue(holder, false);
-        if (HolderHoverTween.GetValue(holder) is Tween tween && GodotObject.IsInstanceValid(tween))
+        if (HoverTweenField.GetValue(holder) is Tween tween && GodotObject.IsInstanceValid(tween))
             tween.Kill();
         NHoverTipSet.Remove(holder);
     }
-
-    // A few screens reuse NGridCardHolder but lay a handful of cards out in a fixed-spacing
-    // row instead of a scrollable NCardGrid: the choose-a-card screen, the post-combat card
-    // reward, and the unlock screen. Those aren't NCardGrid (so the reconcile never touches
-    // them) and we also leave them full size here.
-    internal static bool IsInFixedCardRow(Node node)
-    {
-        for (Node? p = node; p != null; p = p.GetParent())
-        {
-            if (p is NChooseACardSelectionScreen or NCardRewardSelectionScreen or NUnlockCardsScreen)
-                return true;
-        }
-        return false;
-    }
 }
 
-// Every frame the grid processes, snap any "big" card the mouse isn't really over back to
-// small. Cheap: only cards that are currently enlarged (usually 0–1) get the hit test.
-[HarmonyPatch(typeof(NCardGrid), "_Process")]
-internal static class NCardGrid_Process_Reconcile_Patch
+[HarmonyPatch(typeof(NGridCardHolder), "OnFocus")]
+internal static class NGridCardHolder_OnFocus_Patch
 {
-    private static void Postfix(NCardGrid __instance)
+    private static bool Prefix(NGridCardHolder __instance)
     {
-        if (!ModRuntime.Enabled) return;
+        if (!ModRuntime.Enabled || GridHoverGate.IsDrivingHover) return true;
         try
         {
-            DeckModeController.PollHotkey();
-            if (!DeckModeController.MiniEnabled || GridHoverGate.UsingController())
-                return;
-            // Slot-driven hover (2026-11-16): the card whose resting slot holds the mouse is THE
-            // hovered card, regardless of which (possibly enlarged, possibly still-shrinking) card
-            // Godot thinks is on top. Fixed slot rects can't oscillate, so cards no longer pop up
-            // and down as the cursor crosses the grid.
-            var holders = __instance.CurrentlyDisplayedCardHolders.Where(h => h != null).ToList();
-            NGridCardHolder? target = GridHoverGate.PointerOverGrid(__instance)
-                ? holders.FirstOrDefault(h => GridHoverGate.MouseInSlot(h, GridHoverGate.SlotInset))
-                : null;
-            foreach (NGridCardHolder holder in holders)
-            {
-                if (holder == target || GridHoverGate.HolderIsFocused.GetValue(holder) is not true)
-                    continue;
-                // Another card's slot has the mouse -> hand over. Otherwise keep this card while the
-                // mouse is still on its enlarged body (reading it), and drop it once it isn't.
-                if (target == null && GridHoverGate.MouseActuallyInside(holder.Hitbox))
-                    continue;
-                Dbg.Once("reconcile", "hover reconcile fired: un-hovering a card the mouse is not on " +
-                                       "(via the game's own un-hover path)");
-                GridHoverGate.ForceUnhover(holder);
-            }
-            if (target != null && GridHoverGate.HolderIsFocused.GetValue(target) is not true)
-                GridHoverGate.OnFocusMethod.Invoke(target, null);
+            if (DeckModeController.MiniEnabled && GridOwnership.IsGridOwned(__instance) && !GridHoverGate.UsingController())
+                return false;
+            return true;
         }
         catch (Exception ex)
         {
-            ModRuntime.Disable(nameof(NCardGrid_Process_Reconcile_Patch), ex);
+            ModRuntime.Disable(nameof(NGridCardHolder_OnFocus_Patch), ex);
+            return true;
         }
     }
 }
 
-// Grid holders come from a pool; Create()/OnReturnedFromPool reset Scale but not the
-// _isHovered/_isFocused flags. Scrub them on reuse so a recycled "hovered" card starts
-// clean (avoids even a one-frame stale enlarge before the reconcile runs).
+[HarmonyPatch(typeof(NCardHolder), "OnUnfocus")]
+internal static class NCardHolder_OnUnfocus_Patch
+{
+    private static bool Prefix(NCardHolder __instance)
+    {
+        if (!ModRuntime.Enabled || GridHoverGate.IsDrivingHover) return true;
+        try
+        {
+            if (DeckModeController.MiniEnabled && __instance is NGridCardHolder
+                && GridOwnership.IsGridOwned(__instance) && !GridHoverGate.UsingController())
+                return false;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            ModRuntime.Disable(nameof(NCardHolder_OnUnfocus_Patch), ex);
+            return true;
+        }
+    }
+}
+
+[HarmonyPatch(typeof(NCardGrid), "_Process")]
+internal static class NCardGrid_Process_Patch
+{
+    private static void Postfix(NCardGrid __instance)
+    {
+        if (!ModRuntime.Enabled || !__instance.IsVisibleInTree()) return;
+        try
+        {
+            DeckModeController.PollHotkey(__instance);
+            DeckModeController.FlushLockedReinit(__instance);
+            GridHoverGate.Update(__instance);
+        }
+        catch (Exception ex)
+        {
+            ModRuntime.Disable(nameof(NCardGrid_Process_Patch), ex);
+        }
+    }
+}
+
 [HarmonyPatch(typeof(NGridCardHolder), "Create")]
 internal static class Create_Reset_Patch
 {
@@ -550,13 +859,6 @@ internal static class Create_Reset_Patch
     }
 }
 
-
-// Instant mini-card hover (2026-11-16). Vanilla DoCardHoverEffects SNAPS a hovered card to
-// HoverScale but eases it back over 0.5s — at mini's 0.48 -> 1.0 that leaves a full-size card
-// lingering over its neighbours for half a second after the mouse has moved on. For mini grid
-// cards both directions are instant (0s, by request): exactly one card is ever big. Hover tips are
-// created exactly as vanilla does, at HoverScale. Everything else (hand, inspect, reward rows,
-// mini off) runs vanilla.
 [HarmonyPatch(typeof(NCardHolder), "DoCardHoverEffects")]
 internal static class NCardHolder_DoCardHoverEffects_Patch
 {
@@ -566,7 +868,7 @@ internal static class NCardHolder_DoCardHoverEffects_Patch
         try
         {
             if (!DeckModeController.MiniEnabled || __instance is not NGridCardHolder
-                || GridHoverGate.IsInFixedCardRow(__instance))
+                || !GridOwnership.IsGridOwned(__instance))
                 return true;
 
             (GridHoverGate.HoverTweenField.GetValue(__instance) as Tween)?.Kill();
@@ -574,7 +876,7 @@ internal static class NCardHolder_DoCardHoverEffects_Patch
             if (isHovered)
             {
                 __instance.Scale = (Vector2)GridHoverGate.HoverScaleGetter.Invoke(__instance, null)!;
-                if (__instance.CardNode?.Visibility == MegaCrit.Sts2.Core.Entities.UI.ModelVisibility.Visible)
+                if (__instance.CardNode?.Visibility == ModelVisibility.Visible)
                     GridHoverGate.CreateHoverTipsMethod.Invoke(__instance, null);
             }
             else

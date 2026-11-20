@@ -70,30 +70,29 @@ These are the ONLY intended differences from vanilla. Everything else matches.
    extra dimming layer *below* whatever the base tint table says (see D1 in §4).
 5. **Size language**: elite ×1.35, boss ×1.9, start ×1.45 (vanilla: same-size normals;
    hover does the enlarging). Applied to drawing, hitboxes, focus rects.
-6. **Static boss icon art** (`ui/run_history/{bossid}.png`) instead of the animated
-   Spine boss — forced (a `_Draw` pass can't render Spine); intent is the closest
-   possible static match to the vanilla node's look.
+6. **Animated Spine boss art restored (2026-11-19)**: driving the live `NMapScreen` in place
+   renders the real `NBossMapPoint` (and `SecondBossMapPoint`) directly — no static PNG fallback
+   needed.
 7. **Marker at the node's left, rotated, small** — forced: in the compressed layout the
-   vanilla above-the-node placement occludes the node one floor up. Vanilla's
-   suppression rules still apply (§3.11).
-8. **Info panel** (act name bottom-right), **two checkboxes** bottom-left, **M/F keys**,
-   and the whole two-modes-one-map architecture (capstone page, Open-prefix, etc.).
+   vanilla above-the-node placement occludes the node one floor up. Vanilla's suppression rules
+   (`NMapScreen.Open` hides it on start/boss rows) apply automatically.
+8. **Info panel** (act name bottom-right), **three checkboxes** bottom-left (above `_backButton`),
+   and **F key** to flip Flat ↔ Classic in place on the real `NMapScreen` (all standard map keys
+   `M`/`Tab`/top-bar/ESC/controller run 100% natively without hijacking `NInputManager`).
 9. **No background art** (decided 2026-08-01; was gap §3.1): the flat `Act.MapBgColor`
-   fill stays; vanilla's `MapTopBg/MidBg/BotBg` painted art is not reproduced.
-10. **Paths stay `DrawDashedLine`** (decided 2026-08-01; was gap §3.2): current look is
-    good; we no longer claim it is vanilla's ink-dot style (see §1.1).
-11. **No debug-travel support** (decided 2026-08-01; was gap §3.12): vanilla's
-    dev-console `IsDebugTravelEnabled` click-anywhere is not honored on the flat page.
-    Player-facing travel rules are vanilla-identical.
-12. **Map drawings on the flat page** (updated 2026-08-08; was conscious §2.12): the real
-    `NMapDrawings` + `%DrawingTools` are borrowed onto the flat page (same code path as
-    classic — `NMapDrawingInput`, draw/erase/clear, net sync). Size is kept native and
-    Scale fits the flat viewport so strokes survive F-flips; F still flips modes.
-13. **No multiplayer visuals on the flat page** (decided 2026-08-01, was D3): vote
-    badges, ping ripples, split-vote animation, and remote cursors are not drawn. The
-    underlying systems keep working untouched — flat-page clicks cast real votes, pings
-    still sound — the information is just not *shown*. Vote badges are the natural
-    future addition if MP use ever matters.
+   fill stays (`FlatBackdrop`); vanilla's `MapTopBg/MidBg/BotBg` painted art is hidden in Flat
+   mode and restored in Classic mode.
+10. **Paths stay `DrawDashedLine`** (decided 2026-08-01; was gap §3.2): drawn by event-driven
+    `FlatPathsLayer` inside `TheMap` right before `Points`, in the act's own path palette.
+11. **Debug-travel & all gameplay rules inherited natively (2026-11-19)**: clicks hit the live
+    `NMapPoint` nodes directly.
+12. **Map drawings native in place (2026-11-19)**: `NMapDrawings` and `%DrawingTools` are no
+    longer borrowed or reparented; `Drawings` keeps its vanilla `Size` and receives an exact
+    affine `(Position, Scale)` transform aligning vanilla node bounds to flat node bounds.
+13. **Multiplayer visuals & visited-room hover tips inherited natively (2026-11-19)**: vote
+    badges, ping ripples, split-vote animation, visited-room `NMapPointHistoryHoverTip`, live
+    `_questIcon`, `NMapCircleVfx`, `NMapNodeSelectVfx`, and remapped remote cursors all run
+    natively on the real `NMapScreen`.
 14. **Retired divergences (2026-08-01)** — these were ours and are being REMOVED in
     favor of exact vanilla behavior: the permanent white frontier border rings, the
     continuous legend-hover pulse (→ vanilla held swell), the visited-node dimming, the

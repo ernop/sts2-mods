@@ -39,7 +39,7 @@ integration changes.
 - Managed DLLs live in `…\Slay the Spire 2\data_sts2_windows_x86_64\`.
   The mod references `sts2.dll`, `GodotSharp.dll`, `0Harmony.dll` from there
   (reference-only — nothing is bundled or copied).
-- Current compatibility target: game version **v0.113.0**.
+- Current compatibility target: game version **v0.113.1**.
 
 ## Decompiler (how to read game internals)
 
@@ -99,17 +99,25 @@ The repo hosts **two fully independent mods** (separate DLLs, manifests, Harmony
 hook preflights — no shared assembly):
 
 **FlatMap (map), `flatmap/`:**
-- `flatmap/FlatMapMod.cs` — map controller, Harmony patch boundaries, and map rendering.
+- `flatmap/FlatMapMod.cs` — `FlatMapController` and Harmony patches driving the real `NMapScreen`
+  in place (layout application, Neon Rims on live `NMapPoint`s, left-side marker, share-button
+  fallback, `F` mode flip).
+- `flatmap/Map/FlatMapLayoutEngine.cs` — pure screen-space geometry, weighted floor spacing,
+  two-boss support, reachability BFS, visited `?` resolution, and exact `Drawings` affine transform.
+- `flatmap/Map/FlatMapOverlays.cs` — event-driven `FlatBackdrop`, `FlatPathsLayer`, and responsive
+  `FlatChromeOverlay` (bottom-left switches + bottom-right act title).
 - `flatmap/Runtime/ModRuntime.cs` — compatibility catalog, guarded Harmony lifecycle, reflection helpers.
 - `flatmap/Config/FlatMapConfig.cs` — persisted user settings and debug opt-ins (`user://flatmap.cfg`;
   first run migrates the flat preference from the legacy `user://deckview.cfg`).
-- `flatmap/UI/ToggleSwitch.cs` — game-native toggles and keyboard/controller activation.
-- `layout/` — pure map layout algorithm and property-test executable.
+- `flatmap/UI/ToggleSwitch.cs` — game-native toggles with automatic light/dark background contrast.
+- `layout/` — pure map layout algorithm (with two-boss spine alignment) and offline test executable.
 
 **DeckView (deck zoom), `deckview/`:**
-- `deckview/DeckViewMod.cs` — card shrink patches, hover reconcile, on-screen toggle.
+- `deckview/DeckViewMod.cs` — `NCardGrid` allowlist shrink patches, unified single-owner pointer
+  hover (`GridHoverGate`), guarded `T` hotkey, scroll-locked reinit flush, and responsive on-screen
+  "Mini-cards" toggles across deck view, card piles, card library, and card-select screens.
 - `deckview/Runtime/ModRuntime.cs`, `deckview/Config/DeckViewConfig.cs`
-  (`user://deckview.cfg`, the historical location), `deckview/UI/`.
+  (`user://deckview.cfg`, the historical location), `deckview/UI/ToggleSwitch.cs`.
 
 The small runtime/toggle boilerplate is deliberately duplicated per mod ("completely separate"
 was the design goal); keep the copies textually close so diffs stay reviewable.

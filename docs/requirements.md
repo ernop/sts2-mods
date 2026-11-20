@@ -23,33 +23,54 @@ Cross-cutting policies in "Invariants" below are mandatory.
 
 ## 2. Mini-cards (deck views)
 
-- **[done]** Shrink cards in: deck view, draw/discard/exhaust piles, card library, deck card-select.
+- **[done]** Shrink cards in: deck view, draw/discard/exhaust piles, card library, deck card-select
+  — scoped strictly via an **`NCardGrid` ownership allowlist** (`GridOwnership`: `InitGrid` depth
+  counter + `NCardGrid` ancestor check), replacing the fragile screen denylist.
 - **[done]** Leave at normal size: combat hand, inspect popup, choose-a-card, card-reward, unlock,
-  shop, card-bundle screens.
-- **[done]** Hover a shrunk card → pops to full size; move off → shrinks back smoothly, and its
-  hover-tip / related-card popup is dismissed via the game's *own* un-hover path (no lingering popup).
-- **[done]** A stuck "opens too big" card (stale hover from layout) is reconciled back to small each
-  frame; skipped under controller input.
-- **[done]** Visible **"Mini-cards" toggle** in the deck control cluster (by the sort buttons /
-  "View upgrades"), **on by default**, hotkey **T**. Persisted across runs (`user://deckview.cfg`).
-- **[done]** The toggle measures the live "View upgrades" control and matches its game checkbox art,
-  effective size, and Kreon label font. Mouse, keyboard, and controller activation are supported.
+  shop, card-bundle, and any future/modded non-grid screens.
+- **[done]** **Unified single-owner pointer hover** (`GridHoverGate`): on mini grids in pointer
+  mode, rogue mouse-triggered `NGridCardHolder.OnFocus` / `NCardHolder.OnUnfocus` callbacks from
+  overlapping enlarged hitboxes are suppressed and `GridHoverGate` drives both hover and unhover
+  atomically from resting `SmallScale` slots (instant 0s hover/unhover, zero flicker, zero stuck-big
+  cards, zero idle work on hidden grids). Controller/keyboard navigation runs 100% vanilla.
+- **[done]** Visible **"Mini-cards" toggle** on **every shrunk screen family** — deck/simple view
+  (above *View upgrades*), draw/discard/exhaust piles (above Back), card library (in filter
+  cluster), and deck card-select screens (above Peek and hidden when peeking) — **on by default**,
+  responsive on resize, proportional checkbox size (~24–28 px matching vanilla), hotkey **T**
+  (guarded against text-input focus such as Card Library search, modifiers, transitions, and
+  modals). Rebuilds live even when a grid has `CanScroll == false`. Persisted in `user://deckview.cfg`.
 
 ---
 
-## 3. Map — the flat page
+## 3. Map — the flat page (2026-11-19 architecture: in-place `NMapScreen`)
 
-### Structure & integration
-- **[done]** Rendered as a **real capstone screen** (`ICapstoneScreen` via `NCapstoneContainer`),
-  exactly like the deck-view screen — so it's a top-level page that naturally keeps the game's **top
-  bar**, dim backstop, combat pause, and **native input/back/controller** routing.
-- **[done*]** Layout is **VERTICAL — the vanilla map's own orientation** (floors run bottom→top,
-  start at the bottom, boss at the top). This is the only orientation (the earlier left→right
-  layout was retired 2026-07-28). Nearly the only changes vs. vanilla are: (a) the act is
-  **compressed vertically so the whole map fits one screen** — every node visible, no scrolling —
-  and (b) our optional lane-compression system ("Compress") with its toggle. Lanes run across X,
-  centered; lane spacing is fixed to the raw span (Compress = narrower, never stretched).
-- **[done]** Reads live state only (`_mapPointDictionary`, `_runState`) — never mutates game data.
+### Structure & integration (settled decision 2026-11-19)
+- **[done]** Drives the **real `NMapScreen` in place** instead of maintaining a parallel
+  `MiniMapScreen : ICapstoneScreen` or borrowing/reparenting vanilla controls (`_mapLegend`,
+  `Drawings`, `_drawingTools`). Rationale: eliminates the global `M` hotkey hijack, broken
+  `NMerchantRoom` shop-music signals, node-reparenting fragility, static boss fallback, missing
+  visited-room history hover tips, missing multiplayer votes/pings/cursors, and per-frame redraws;
+  every vanilla lifecycle, input, signal, VFX, and controller path stays 100% native.
+- **[done]** Layout is **VERTICAL — the vanilla map's own orientation** (floors run bottom→top,
+  start at the bottom, boss / second boss at the top). Every live `NMapPoint` is placed & scaled
+  in place into a single viewport-responsive screen (no scrolling, no 3s start-of-act scroll tween,
+  act banner & first-run FTUE preserved), with weighted row spacing, a calm widescreen aspect-ratio
+  cap (`laneSpacing <= rowStep * 1.55f`), and `Compress` (**on by default**, 2026-11-19):
+  - **Compress ON (default):** smooth continuous vertical-rail & curvature QP layout
+    (`MapLayout.AssignSmoothX`) with rim-fanned smooth cubic Bézier dashed footpaths (dead-straight
+    vertical dashes when `|dx| < 2px`, smooth S-curves on forks/merges/fans; supports single-boss
+    and two-boss acts via pinned Start/Boss/SecondBoss spine).
+  - **Compress OFF:** exact 1:1 vanilla columns with straight dashed footpaths (same calm aspect
+    ratio, connectivity untouched).
+- **[done]** Native `NMapDrawings` keeps its vanilla `Size` untouched and receives an exact affine
+  `(Position, Scale)` transform aligning vanilla node bounds onto flat node bounds, so strokes,
+  erasing, co-op remote cursors, and `F`-mode flips align cleanly without reparenting.
+- **[done]** `NMapShareButton` temporarily restores Classic layout while taking a map screenshot
+  and re-applies Flat mode automatically when done.
+- **[done]** Light event-driven overlays on `NMapScreen` (`FlatBackdrop`, `FlatPathsLayer`,
+  `FlatChromeOverlay`): zero per-frame redraws; bottom-left switches sit cleanly above `_backButton`
+  with a fixed `"Flat map"` position across modes and automatic pure-black/pure-white text contrast
+  against `Act.MapBgColor` vs. dark Classic backstop.
 
 ### Node appearance (design directives of 2026-07-28 — the intended way we draw the map)
 - **[done*]** **Background = the act's own map colour** (`Act.MapBgColor`), so the game's icon art
@@ -215,26 +236,33 @@ Cross-cutting policies in "Invariants" below are mandatory.
   consistent positions) — item C "all UIs match".
 
 ### Compaction algorithm
-- **[done]** **Hard invariant:** every step preserves each floor's column order ⇒ the crossing count
-  is invariant (== the game's), so compaction can never scramble which rooms connect or overlap two
-  rooms. A runtime assert crashes rather than draw an illegal layout.
-- **[done]** **Exact optimizer (2026-11-16, `OptimalLayout` in `layout/MapLayout.cs`).** Replaced
-  the greedy hill-climb + candidate ladder, which could leave interior pockets and put the boss one
-  lane off the start. Every edge joins adjacent floors and a legal layout is just, per floor, an
-  increasing choice of lanes, so dynamic programming over every choice of every floor (<= 35 per
-  floor on a 7-wide map), every map width, and every shared start/boss lane finds the GLOBAL
-  minimum of:
-  - **Hard:** connectivity untouched (edges never edited; column order kept; no overlap; crossings
-    == vanilla), **start and boss in the same lane**, no fan edge flipped to the other side.
-  - **Soft:** steep angles (convex: a 2-lane body jump costs 8x a 1-lane step; start/boss fans pay
-    a softer d^2), **interior holes** (an empty lane inside a floor's span), **broken lane columns**
-    (same-lane rooms on adjacent floors that are NOT linked, and every place a lane resumes after a
-    gap), a lost fan direction class, and map width.
-  Weights are constants on `OptimalLayout`. The legacy greedy pipeline remains as the fallback for
-  graphs outside the model (an edge skipping a floor) and as option B in the viz tool. Verified
-  offline: 0 illegal, 0 regressed, 0 order leaks, 0 misaligned ends across 500 + 300 random maps
-  and the captured real levels; `dotnet run -- viz-file <dump>` renders any level (make a dump from
-  a run save with `scripts/save2dump.py <current_run.save>`).
+- **[done]** **Hard invariant:** every layout preserves each floor's column order and minimum lane
+  separation (`x[i+1] - x[i] >= 1.0`, so zero overlaps and zero added crossings; connectivity is
+  never modified). A runtime assert (`LayoutInvariants.CheckContinuous`) refuses to draw an illegal
+  layout.
+- **[done]** **Continuous smooth vertical-rail & curvature QP (2026-11-19, `ContinuousMapLayout` /
+  `MapLayout.AssignSmoothX` in `layout/MapLayout.cs` — shipped in `flatmap` 0.6.0 as `Compress` ON,
+  default ON).** Replaced discrete integer DP as the active `Compress` layout after side-by-side
+  evaluation showed integer quantization caused jagged 3-floor bends and lopsided forks, while
+  uncapped ultrawide horizontal stretching flattened diagonals into ~76° slashes. Solved via
+  adaptive-restart FISTA with exact O(k) PAV isotonic-separation projection per row:
+  - **Hard:** exact connectivity, strict within-row order with `>= 1.0` separation (0 overlaps,
+    0 added crossings), canonical `(Row, Col)` determinism (bit-for-bit order-independent), and
+    aligned Start / Boss / SecondBoss spine (`x = 0`).
+  - **Soft:** pseudo-Huber vertical-rail pull on body edges (snaps near-vertical chains dead-straight),
+    Euler–Bernoulli second-derivative curvature penalty `(x_{r+1} - 2x_r + x_{r-1})^2` across 3-floor
+    through-paths (eliminates sawtooth zigzags and centers forks/merges), `UnlinkedGap = 1.15` subtle
+    visual separation between adjacent rooms that share neither parent nor child, and gentle compactness.
+  - **Rendering (`FlatMapLayoutEngine` + `FlatPathsLayer`):** `laneSpacing <= rowStep * 1.55f` calm
+    aspect-ratio cap across 16:9 and 21:9 displays, paired with rim-fanned cubic-Hermite Bézier
+    S-curve dashed paths (arc-length parameterized for uniform dashes; straight vertical dashes when
+    `|dx| < 2px`). Cuts mean through-turn angle from 50.5° → 29.5° (-70.7% bend energy) with 0
+    illegal, 0 crossing regressions, 0 spine misalignments, and 0 order leaks across 300 random maps
+    and captured real acts.
+- **[done]** **Discrete exact DP optimizer (2026-11-16, `OptimalLayout` / `MapLayout.AssignLanes`)**
+  remains kept and regression-tested in `layout/MapLayout.cs` (500 + 300 + 200 property/fan/two-boss
+  tests). `dotnet run --project layout/layouttest.csproj -- viz-file <dump>` inspects any level
+  (make a dump from a run save with `scripts/save2dump.py <current_run.save>`).
 
 ---
 

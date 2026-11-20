@@ -15,7 +15,7 @@ combat, rewards, or any other gameplay.**
 |---|---|
 | ![Flat map](docs/images/flat-map.png) | ![Mini-cards](docs/images/deck-view.png) |
 
-> **Compatibility target: Slay the Spire 2 `v0.113.0`.**
+> **Compatibility target: Slay the Spire 2 `v0.113.1`.**
 >
 > Each mod checks every game hook, and every game member its compiled code calls, before
 > enabling. If an STS2 update moves or changes a member,
@@ -25,47 +25,55 @@ combat, rewards, or any other gameplay.**
 
 ## FlatMap — the whole-act map
 
-STS2's map is a tall vertical scroll: you can never see the whole act at once. FlatMap renders
-the **same map** — same orientation (start at the bottom, boss at the top), same rooms, same
-connections — compressed vertically so the **whole act fits one screen**, as a real top-level
-page (its own top bar, ESC/back, controller routing).
+STS2's map is a tall vertical scroll: you can never see the whole act at once. FlatMap drives
+the **real `NMapScreen` in place** — same orientation (start at the bottom, boss at the top),
+same rooms, same connections, same native controls — compressed vertically so the **whole act
+fits one screen**, with zero parallel capstone screen and zero node borrowing.
 
-- **The game's own visual language.** The background is the act's own map colour
-  (`Act.MapBgColor`), connections are the vanilla **dashed footpaths** in the act's own path
-  palette, and every room is the game's real icon art with its natural colours, over the icon's
-  main body redrawn in a room-type colour — so each node's outline is the **actual shape of the
-  item**, not a circle. The original size language holds: **elites draw larger, the boss
-  largest**, using each boss's real icon art. The **game's own Legend panel** appears exactly as
-  on the classic map.
+- **The game's own visual language & live nodes.** The background is the act's own map colour
+  (`Act.MapBgColor`), connections are crisp **dashed footpaths** in the act's own path palette,
+  and every room is the game's live `NMapPoint` node with opaque natural icon art and vivid
+  room-type borders (Neon Rims). The original size language holds: **elites draw larger, the
+  boss largest** (using the game's real animated Spine `NBossMapPoint` — and both bosses in
+  two-boss acts). The **game's own Legend panel**, **map drawings** (`NMapDrawings` +
+  `%DrawingTools`), **visited-room hover history**, **quest markers**, **ink circles**,
+  **shop music**, and **multiplayer votes/pings/cursors** all stay 100% native.
 - **State in motion, like the original.** Hovering any room swells it under the cursor; the rooms
-  you can travel to *right now* always carry white "next step" borders and pulse continuously at
-  the vanilla map's rate (relic-aware incl. Wing Boots); hovering a legend row makes every room
-  of that type pulse. Your spot is marked by the game's own "you are here"
-  arrow; your past route keeps its colours slightly dimmed (a visited `?` adopts the room it
-  turned out to be) and vanilla ink-circle marks; optionally, rooms you can no longer reach fade
-  to faint ghosts (the **Hide unreachable nodes** checkbox, off by default).
-  Click a pulsing room to travel via the game's own selection path.
-- **Three checkboxes** (bottom-left, saved across runs): **Flat map** (flat vs. classic
-  rendering), **Compress** (off by default — raw 1:1 with the game's columns; on = our
-  lane-compression, which provably changes nothing but spacing), and **Hide unreachable nodes**
-  (off by default — on = rooms you can no longer reach fade to ghosts).
-- **Standard controls always work:** the top-bar map button, the map room, and **M** all toggle
-  the map in either mode; **F** instantly flips flat↔classic while a map is up (two display
-  styles of one map — never stacked); ESC/back leaves the map.
-- It only ever *reads* the live map — it never changes your run.
+  you can travel to *right now* carry white "next step" borders and pulse continuously at the
+  vanilla map's rate (relic-aware incl. Wing Boots); hovering a legend row swells every room of
+  that type via vanilla `HighlightPointType`. Your spot is marked by the game's own "you are
+  here" arrow on the left side; your past route keeps its colours slightly dimmed (a visited `?`
+  adopts the room it turned out to be) and vanilla run-seeded ink circles; optionally, rooms you
+  can no longer reach fade to faint ghosts (the **Hide unreachable nodes** checkbox, off by
+  default). Click a pulsing room to travel via the game's own selection path.
+- **Three checkboxes** (bottom-left, saved across runs, staying above the Back button with a
+  fixed "Flat map" position across modes): **Flat map** (flat vs. classic rendering),
+  **Compress** (on by default — smooth continuous vertical-rail & curvature layout with rim-fanned
+  curved dashed footpaths; off = exact 1:1 vanilla columns with straight paths — connectivity is
+  never changed), and **Hide unreachable nodes** (off by default — on = rooms you can no longer
+  reach fade to ghosts).
+- **Standard controls always work natively:** the top-bar map button, the map room, **M** /
+  **Tab**, ESC/back, and controller focus all run through vanilla `NMapScreen` untouched; **F**
+  instantly flips flat↔classic in place while the map is open (and automatically reverts during
+  map share screenshots).
+- It only ever changes presentation and layout — it never mutates gameplay state.
 
-**Compaction (the interesting part).** The act is squeezed onto one screen without ever changing
-which rooms connect. The key invariant: every step preserves each floor's *column order*, so the
-crossing count is identical to the game's — compaction can only reassign display lanes, never
-scramble connectivity or overlap two rooms. The layout is solved *exactly*: dynamic programming
-over every legal lane choice of every floor finds the global minimum of steep angles, interior holes,
-and broken lane columns, with the start and boss forced into the same lane. It's proven offline in
-`layout/`: a pure `MapLayout` algorithm + an invariant checker + metrics + a 500-map property test +
-captured real levels + viz tooling. A runtime assert crashes rather than draw an illegal layout.
+**Smooth map layout (the interesting part).** The act fits on one screen without ever changing
+which rooms connect. The key invariant: every floor preserves strict left-to-right column order
+with `>= 1.0` lane separation, so the crossing count is identical to the game's and rooms can
+never overlap or swap. When **Compress** is on (default), a continuous convex optimizer
+(`ContinuousMapLayout` — pseudo-Huber vertical-rail pull + second-derivative curvature smoothing,
+projected via exact PAV per floor with Start and Boss/SecondBoss aligned on one spine) straightens
+chains, centers forks and merges, separates unlinked neighbors subtly, and draws smooth rim-fanned
+cubic Bézier dashed footpaths at a calm aspect ratio on both 16:9 and ultrawide displays. Turn
+**Compress** off anytime for exact 1:1 vanilla columns with straight dashed paths. Proven offline
+in `layout/`: invariant checkers, metrics, 1,300+ random/fan/two-boss/smooth tests, and captured
+real levels; a runtime invariant check refuses to draw an illegal layout.
 
-The page is a real capstone screen (`MiniMapScreen : ICapstoneScreen` via `NCapstoneContainer`),
-exactly like the game's own deck-view screen, and reads live state straight off `NMapScreen`
-(`_mapPointDictionary`, `_runState`, the real icon/outline textures, `IsTravelEnabled`).
+Under the hood: FlatMap drives `NMapScreen` directly in place — placing and scaling the live
+`NMapPoint` nodes, pinning `_mapContainer`, applying an exact affine transform to native
+`Drawings` without touching `Drawings.Size`, and rendering flat backdrop, dashed paths, and
+chrome through lightweight event-driven overlays.
 
 ## DeckView — the deck zoom
 
@@ -74,14 +82,17 @@ STS2 draws deck-like views at a size where only a handful of cards fit on screen
 at once.
 
 - **Shrinks:** the deck view, the draw / discard / exhaust piles, the card library, and the deck
-  card-select screens.
+  card-select screens — scoped strictly by an `NCardGrid` ownership allowlist (not a screen
+  denylist).
 - **Left at normal size:** the combat hand, the inspect popup, and the choose-a-card,
-  card-reward, unlock, shop, and card-bundle screens.
-- **Hover** pops a card to full size; move off and it shrinks back (with the game's own un-hover
-  path, so hover tips dismiss exactly like vanilla — including the "one card opens stuck-big"
-  stale-hover case, reconciled every frame).
-- **Toggle any time:** the on-screen **Mini-cards** tickbox (next to *View upgrades*) or **T**.
-  Persisted in `user://deckview.cfg`.
+  card-reward, unlock, shop, card-bundle, and any other non-grid screens.
+- **Unified single-owner hover:** hovering pops a card instantly to full size; moving off snaps
+  it back cleanly through the game's own un-hover path (dismissing keyword tips & previews with
+  zero flicker and zero stuck-big cards). Controller/keyboard navigation runs 100% vanilla.
+- **Toggle any time:** the on-screen **Mini-cards** checkbox (present on deck view, draw/discard/
+  exhaust piles, card library, and deck card-select screens — hidden with Peek when peeking) or
+  **T** (guarded against text fields like Card Library search, modifiers, and modals). Persisted
+  in `user://deckview.cfg`.
 
 Under the hood: `NCardGrid` is already responsive — the column count, row count and scroll
 bounds all derive from the per-card layout size (`_cardSize`) and `CardPadding` — so the mod
@@ -91,7 +102,7 @@ shrinks the layout cell and the rendered scale together and everything reflows. 
 
 ## Requirements
 
-- Slay the Spire 2 `v0.113.0`.
+- Slay the Spire 2 `v0.113.1`.
 - No gameplay dependencies. Both mods use the game's built-in mod loader.
 
 ## Install
@@ -137,7 +148,7 @@ map-drawing design directives).
 
 ## Status / caveats
 
-- Targets STS2 `v0.113.0`; `TestedGameVersion` in each mod and `min_game_version` in each
+- Targets STS2 `v0.113.1`; `TestedGameVersion` in each mod and `min_game_version` in each
   manifest record that target. Build, hook, and in-game checks in `PUBLISHING.md` are release
   gates.
 - Mouse, keyboard, and controller can activate every checkbox. On the flat map, controller

@@ -4,22 +4,21 @@ using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
 using System.Runtime.ExceptionServices;
-using Godot;
 using HarmonyLib;
-using MegaCrit.Sts2.Core.ControllerInput;
+using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Map;
-using MegaCrit.Sts2.Core.Nodes.CommonUi;
+using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
-using MegaCrit.Sts2.Core.Nodes.Screens;
 using MegaCrit.Sts2.Core.Nodes.Screens.Map;
-using MegaCrit.Sts2.Core.Nodes.TopBar;
+using MegaCrit.Sts2.Core.Runs;
 
 namespace FlatMap;
 
 /// <summary>
-/// Owns FlatMap's all-or-nothing Harmony lifecycle. A game update that moves a hook now leaves
-/// the unmodified game running and records every missing member in the log.
+/// Owns FlatMap's all-or-nothing Harmony lifecycle. A game update that moves a hook leaves
+/// the unmodified game running and records every missing member in the log. Independent copy
+/// from DeckView — the two mods share no assembly.
 /// </summary>
 internal static class ModRuntime
 {
@@ -45,6 +44,7 @@ internal static class ModRuntime
         catch (Exception ex)
         {
 #if !PUBLIC_BUILD
+            Log.Error($"[FlatMap] STRICT (dev) build: compatibility preflight threw: {ex}");
             throw new InvalidOperationException("[FlatMap] STRICT (dev) build: compatibility preflight threw — fix HookCatalog or CompiledReferences.", ex);
 #else
             LogDisabled($"compatibility preflight failed: {ex}");
@@ -55,8 +55,7 @@ internal static class ModRuntime
         {
             string list = string.Join(", ", missing);
 #if !PUBLIC_BUILD
-            // Dev build: a missing hook is either a real game change or (as here) a wrong HookCatalog
-            // entry — either way we want it LOUD, not a silent revert that reads as "mod does nothing".
+            Log.Error($"[FlatMap] STRICT (dev) build: preflight found missing hooks: {list}");
             throw new InvalidOperationException($"[FlatMap] STRICT (dev) build: preflight found missing hooks: {list}");
 #else
             LogDisabled("incompatible game build; missing hooks: " + list);
@@ -76,7 +75,6 @@ internal static class ModRuntime
             Enabled = false;
             try
             {
-                // PatchAll is not transactional. Remove any classes it applied before the failure.
                 _harmony.UnpatchAll(HarmonyId);
             }
             catch (Exception rollback)
@@ -85,7 +83,7 @@ internal static class ModRuntime
                          $"disabled by their runtime guards: {rollback}");
             }
 #if !PUBLIC_BUILD
-            // Dev build: a PatchAll failure is our bug (bad patch attribute) — crash loudly.
+            Log.Error($"[FlatMap] STRICT (dev) build: Harmony setup failed: {ex}");
             throw new InvalidOperationException("[FlatMap] STRICT (dev) build: Harmony setup failed — fix before release.", ex);
 #else
             LogDisabled($"Harmony setup failed: {ex}");
@@ -98,10 +96,7 @@ internal static class ModRuntime
     internal static void Disable(string location, Exception ex)
     {
 #if !PUBLIC_BUILD
-        // Dev/local builds are STRICT: never mask our own bugs. Re-throw (preserving the stack) so an
-        // unexpected failure in our patch code crashes loudly. Public builds (PUBLIC_BUILD) fall
-        // through to the revert-with-warning below instead. (Compatibility preflight is separate and
-        // reverts+warns in both.)
+        Log.Error($"[FlatMap] STRICT (dev) build failure in {location}: {ex}");
         ExceptionDispatchInfo.Capture(ex).Throw();
 #else
         if (!Enabled)
@@ -129,7 +124,7 @@ internal static class ModRuntime
 
 /// <summary>
 /// Preflight catalog for every non-public or string-named game member FlatMap relies on.
-/// Keep this list synchronized with scripts/verify-hooks.sh.
+/// Keep this list synchronized with scripts/verify-hooks.sh (the FlatMap section).
 /// </summary>
 internal static class HookCatalog
 {
@@ -137,79 +132,100 @@ internal static class HookCatalog
     {
         var missing = new List<string>();
 
-        Method(typeof(NMapScreen), "_Process", missing);
+        Method(typeof(NMapScreen), "_Ready", missing);
+        Method(typeof(NMapScreen), "SetMap", missing);
         Method(typeof(NMapScreen), "Open", missing);
-        Method(typeof(NMapScreen), "SetTravelEnabled", missing);
-        Method(typeof(NMapScreen), "RecalculateTravelability", missing, Type.EmptyTypes);
+        Method(typeof(NMapScreen), "Close", missing);
+        Method(typeof(NMapScreen), "PlayStartOfActAnimation", missing);
+        Method(typeof(NMapScreen), "InitMapPrompt", missing);
+        Method(typeof(NMapScreen), "CanScroll", missing);
+        Method(typeof(NMapScreen), "UpdateScrollPosition", missing);
+        Method(typeof(NMapScreen), "_Process", missing);
+        Method(typeof(NMapScreen), "_Input", missing);
+        Method(typeof(NMapScreen), "RecalculateTravelability", missing);
+        Method(typeof(NMapScreen), "RefreshAllPointVisuals", missing);
+        Method(typeof(NMapScreen), "TravelToMapCoord", missing);
+        Method(typeof(NMapScreen), "GetNetPositionFromScreenPosition", missing);
+        Method(typeof(NMapScreen), "GetScreenPositionFromNetPosition", missing);
+        Property(typeof(NMapScreen), "IsOpen", missing);
         Property(typeof(NMapScreen), "IsTravelEnabled", missing);
-        Field(typeof(NMapScreen), "_mapPointDictionary", missing);
-        FieldInfo? runStateField = Field(typeof(NMapScreen), "_runState", missing);
+        Property(typeof(NMapScreen), "Drawings", missing);
+        Field(typeof(NMapScreen), "_mapContainer", missing);
+        Field(typeof(NMapScreen), "_mapBgContainer", missing);
+        Field(typeof(NMapScreen), "_pathsContainer", missing);
+        Field(typeof(NMapScreen), "_points", missing);
         Field(typeof(NMapScreen), "_marker", missing);
         Field(typeof(NMapScreen), "_mapLegend", missing);
-        Field(typeof(NMapScreen), "_hasPlayedAnimation", missing);
         Field(typeof(NMapScreen), "_drawingTools", missing);
-        Field(typeof(NMapScreen), "_drawingInput", missing);
-        Field(typeof(NMapScreen), "_mapBgContainer", missing);
-        Method(typeof(NMapScreen), "UpdateDrawingButtonStates", missing);
-        Method(typeof(NMapScreen), "OnMapDrawingButtonPressed", missing);
-        Method(typeof(NMapScreen), "OnMapErasingButtonPressed", missing);
-        Method(typeof(NMapScreen), "OnClearMapDrawingButtonPressed", missing);
-        Method(typeof(NMapScreen), "ProcessMouseDrawingEvent", missing);
-        Property(typeof(NMapScreen), "Drawings", missing);
-        Method(typeof(NTopBarMapButton), "IsOpen", missing);
-        Method(typeof(NTopBarMapButton), "OnRelease", missing);
+        Field(typeof(NMapScreen), "_backButton", missing);
+        Field(typeof(NMapScreen), "_backstop", missing);
+        Field(typeof(NMapScreen), "_shareButton", missing);
+        Field(typeof(NMapScreen), "_mapPointDictionary", missing);
+        Field(typeof(NMapScreen), "_startingPointNode", missing);
+        Field(typeof(NMapScreen), "_bossPointNode", missing);
+        Field(typeof(NMapScreen), "_secondBossPointNode", missing);
+        Field(typeof(NMapScreen), "_map", missing);
+        Field(typeof(NMapScreen), "_runState", missing);
+        Field(typeof(NMapScreen), "_hasPlayedAnimation", missing);
+        Field(typeof(NMapScreen), "_targetDragPos", missing);
+        Field(typeof(NMapScreen), "_actAnimTween", missing);
 
+        Method(typeof(NMapBg), "OnViewportChange", missing);
+
+        Property(typeof(NMapPoint), "Point", missing);
+        Property(typeof(NMapPoint), "State", missing);
+        Property(typeof(NMapPoint), "IsTravelable", missing);
+        Property(typeof(NMapPoint), "HoverScale", missing);
+        Property(typeof(NMapPoint), "DownScale", missing);
+        Method(typeof(NMapPoint), "IsInputAllowed", missing);
+        Field(typeof(NMapPoint), "_runState", missing);
+        Property(typeof(NClickableControl), "IsFocused", missing);
+
+        Method(typeof(NNormalMapPoint), "RefreshColorInstantly", missing);
+        Method(typeof(NNormalMapPoint), "AnimHover", missing);
+        Method(typeof(NNormalMapPoint), "AnimUnhover", missing);
+        Method(typeof(NNormalMapPoint), "AnimPressDown", missing);
+        Method(typeof(NNormalMapPoint), "OnSelected", missing);
+        Field(typeof(NNormalMapPoint), "_iconContainer", missing);
         Field(typeof(NNormalMapPoint), "_icon", missing);
         Field(typeof(NNormalMapPoint), "_outline", missing);
         Field(typeof(NNormalMapPoint), "_questIcon", missing);
+        Field(typeof(NNormalMapPoint), "_tween", missing);
+
+        Method(typeof(NAncientMapPoint), "_Process", missing);
+        Method(typeof(NAncientMapPoint), "RefreshColorInstantly", missing);
+        Method(typeof(NAncientMapPoint), "AnimHover", missing);
+        Method(typeof(NAncientMapPoint), "AnimUnhover", missing);
+        Method(typeof(NAncientMapPoint), "AnimPressDown", missing);
+        Method(typeof(NAncientMapPoint), "OnSelected", missing);
         Field(typeof(NAncientMapPoint), "_icon", missing);
         Field(typeof(NAncientMapPoint), "_outline", missing);
-        Field(typeof(NBossMapPoint), "_placeholderImage", missing);
-        Property(typeof(NMapPoint), "Point", missing);
-        Property(typeof(NMapPoint), "State", missing);
+        Field(typeof(NAncientMapPoint), "_tween", missing);
+        Field(typeof(NAncientMapPoint), "_elapsedTime", missing);
+
+        Method(typeof(NMapMarker), "SetMapPoint", missing);
+        Field(typeof(NMapMarker), "_tween", missing);
+
+        Method(typeof(NMapShareButton), "OnRelease", missing);
+        Method(typeof(NMapShareButton), "IsTakingScreenshot", missing);
+
         Field(typeof(MapPoint), "coord", missing);
         Property(typeof(MapPoint), "PointType", missing);
         Property(typeof(MapPoint), "Children", missing);
         Property(typeof(MapPoint), "Quests", missing);
 
-        if (runStateField != null)
-        {
-            Type runState = runStateField.FieldType;
-            Property(runState, "CurrentMapCoord", missing);
-            Property(runState, "CurrentActIndex", missing);
-            Property(runState, "ActFloor", missing);
-            PropertyInfo? act = Property(runState, "Act", missing);
-            Property(runState, "MapPointHistory", missing);
-            PropertyInfo? extra = Property(runState, "ExtraFields", missing);
-            if (extra != null)
-                Property(extra.PropertyType, "StartedWithNeow", missing);
-            PropertyInfo? runMap = Property(runState, "Map", missing);
-            if (runMap != null)
-                Property(runMap.PropertyType, "SecondBossMapPoint", missing);
-            if (act != null)
-            {
-                PropertyInfo? title = Property(act.PropertyType, "Title", missing);
-                if (title != null)
-                    Method(title.PropertyType, "GetFormattedText", missing, Type.EmptyTypes);
-                Property(act.PropertyType, "MapBgColor", missing);
-                Property(act.PropertyType, "MapTraveledColor", missing);
-                Property(act.PropertyType, "MapUntraveledColor", missing);
-                PropertyInfo? bossEnc = Property(act.PropertyType, "BossEncounter", missing);
-                Property(act.PropertyType, "SecondBossEncounter", missing);
-                if (bossEnc != null)
-                    Property(bossEnc.PropertyType, "BossNodePath", missing);
-            }
-        }
+        Property(typeof(RunState), "CurrentMapCoord", missing);
+        Property(typeof(RunState), "CurrentActIndex", missing);
+        Property(typeof(RunState), "ActFloor", missing);
+        Property(typeof(RunState), "Act", missing);
+        Property(typeof(RunState), "MapPointHistory", missing);
+        Property(typeof(RunState), "VisitedMapCoords", missing);
 
-        // The method's first parameter is the base InputEvent (our patch reads __args[0] and casts to
-        // InputEventKey). So require the first param to be a type that an InputEventKey fits into
-        // (InputEvent or InputEventKey) — NOT that it's exactly InputEventKey (it isn't).
-        MethodInfo? shortcut = Method(typeof(NInputManager), "ProcessHotkeyInput", missing);
-        if (shortcut != null &&
-            (shortcut.GetParameters().Length == 0 ||
-             !shortcut.GetParameters()[0].ParameterType.IsAssignableFrom(typeof(InputEventKey))))
-            missing.Add("NInputManager.ProcessHotkeyInput(first arg must accept an InputEventKey)");
-        Property(typeof(NControllerManager), "IsUsingDirectionalNavigation", missing);
+        Property(typeof(ActModel), "Title", missing);
+        Property(typeof(ActModel), "MapBgColor", missing);
+        Property(typeof(ActModel), "MapTraveledColor", missing);
+        Property(typeof(ActModel), "MapUntraveledColor", missing);
+        Method(typeof(LocString), "GetFormattedText", missing, Type.EmptyTypes);
 
         return missing;
     }
@@ -234,14 +250,10 @@ internal static class HookCatalog
         if (value == null) missing.Add($"{type.Name}.{name}");
         return value;
     }
-
 }
 
 /// <summary>
-/// Preflight for the game members FlatMap's compiled code names directly (public calls, fields,
-/// types). .NET binds those only when the calling method first runs (forcing JIT compilation does
-/// not bind them), so a renamed or re-signatured member would otherwise fail mid-run; resolving
-/// every member token in our IL against the loaded game reports it here instead.
+/// Preflight for the game members FlatMap's compiled code names directly.
 /// </summary>
 internal static class CompiledReferences
 {
@@ -326,7 +338,7 @@ internal static class CompiledReferences
                         case OperandType.InlineSwitch:
                             i += 4 + 4 * BitConverter.ToInt32(il, i);
                             break;
-                        default: // InlineBrTarget, InlineI, InlineSig, InlineString, ShortInlineR
+                        default:
                             i += 4;
                             break;
                     }
@@ -337,32 +349,15 @@ internal static class CompiledReferences
     }
 }
 
-// Reflection calls remain fail-fast internally, but ModRuntime preflights all static lookups before
-// applying any patch and every patch boundary catches unexpected runtime failures.
 internal static class Reflect
 {
     internal static FieldInfo Field(Type type, string name) =>
         AccessTools.Field(type, name) ?? throw new MissingFieldException(type.FullName, name);
 
-    internal static MethodInfo Method(Type type, string name) =>
-        AccessTools.Method(type, name) ?? throw new MissingMethodException(type.FullName, name);
-
-    internal static MethodInfo Method(Type type, string name, Type[] parameters) =>
-        AccessTools.Method(type, name, parameters) ?? throw new MissingMethodException(type.FullName, name);
+    internal static MethodInfo Method(Type type, string name, Type[]? args = null) =>
+        (args == null ? AccessTools.Method(type, name) : AccessTools.Method(type, name, args))
+        ?? throw new MissingMethodException(type.FullName, name);
 
     internal static MethodInfo PropertyGetter(Type type, string name) =>
-        AccessTools.PropertyGetter(type, name)
-        ?? throw new MissingMethodException(type.FullName, $"get_{name}");
-}
-
-internal static class Dbg
-{
-    private static readonly HashSet<string> Seen = new();
-
-    internal static void Once(string key, string message)
-    {
-        if (Seen.Add(key)) Log.Info($"[FlatMap] {message}");
-    }
-
-    internal static void Rearm() => Seen.Clear();
+        AccessTools.PropertyGetter(type, name) ?? throw new MissingMemberException(type.FullName, name);
 }

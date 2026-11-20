@@ -66,6 +66,19 @@ public sealed class LGraph
     }
 
     public int[] BaselineLanes() => Nodes.Select(n => n.Col).ToArray();
+
+    // First row of a trailing aligned single-node boss spine (e.g. row 16 for a single boss, or
+    // Boss 1 when a second boss sits directly above it on row 17 at the same column). Returns -1
+    // if the final row is not a single node or the graph has fewer than two rows.
+    public int BossSpineStartRow()
+    {
+        if (RowCount < 2 || RowsOrdered[RowCount - 1].Length != 1) return -1;
+        int r = RowCount - 1;
+        while (r > 1 && RowsOrdered[r - 1].Length == 1
+               && Nodes[RowsOrdered[r - 1][0]].Col == Nodes[RowsOrdered[r][0]].Col)
+            r--;
+        return r;
+    }
 }
 
 public static class MapLayout
@@ -74,6 +87,14 @@ public static class MapLayout
     // step preserves each row's column order, so the crossing count is invariant (== baseline) —
     // meaning we can minimize LANES and edge length freely without ever adding a crossing.
     public static int[] AssignLanes(LGraph g) => OptimalLayout.TryAssign(g) ?? AssignLanesLegacy(g);
+
+    // Continuous minimum-bending-energy horizontal coordinate assignment (2026-11-19).
+    // Solves a strictly convex problem (vertical-rail pseudo-Huber slope + Euler-Bernoulli
+    // second-derivative curvature + gentle centering) projected onto the exact non-overlapping
+    // within-row column-order polytope via Pool-Adjacent-Violators. Preserves every hard invariant
+    // (zero overlap, exact vanilla crossing count, aligned Start/Boss/SecondBoss spine) while
+    // eliminating integer-grid sawtooth spikes and lopsided forks.
+    public static double[] AssignSmoothX(LGraph g) => ContinuousMapLayout.Solve(g);
 
     // The pre-2026-11-16 greedy pipeline (hill-climb + lane-merge + candidate ladder). Kept as the
     // fallback for graphs the exact optimizer does not model (an edge that skips a floor) and as a
@@ -117,9 +138,15 @@ public static class MapLayout
     // overlapping them. Re-Compact to drop any lane this emptied.
     private static void PinEnds(LGraph g, int[] lane)
     {
-        int last = g.RowsOrdered.Length - 1;
-        if (g.RowsOrdered[0].Length == 1) PinEnd(g, lane, g.RowsOrdered[0][0]);
-        if (last != 0 && g.RowsOrdered[last].Length == 1) PinEnd(g, lane, g.RowsOrdered[last][0]);
+        if (g.RowsOrdered[0].Length == 1) PinEnd(g, lane, g.RowsOrdered[0][0], isStart: true);
+        int bossRow = g.BossSpineStartRow();
+        if (bossRow > 0)
+        {
+            int bossId = g.RowsOrdered[bossRow][0];
+            PinEnd(g, lane, bossId, isStart: false);
+            for (int r = bossRow + 1; r < g.RowCount; r++)
+                lane[g.RowsOrdered[r][0]] = lane[bossId];
+        }
         Compact(lane);
     }
 
@@ -134,11 +161,13 @@ public static class MapLayout
     // (a "\/" whose children collapsed onto adjacent lanes), failures are graded per edge: a
     // flattened direction ("\" read as "|") costs 1, an outright flip ("\" read as "/") costs 2 —
     // so the least-bad "\|" / "|/" always beats the unbalanced "\\" / "//".
-    private static void PinEnd(LGraph g, int[] lane, int s)
+    private static void PinEnd(LGraph g, int[] lane, int s, bool isStart)
     {
         int min = lane.Min(), max = lane.Max();
         int center2 = min + max;
-        int[] kids = g.NeighborsOf[s];
+        int r = g.RowOf[s];
+        int[] kids = g.NeighborsOf[s].Where(k => isStart ? g.RowOf[k] > r : g.RowOf[k] < r).ToArray();
+        if (kids.Length == 0) return;
         int bestL = lane[s];
         (int missing, int graded, int offCenter, int l) bestKey =
             (int.MaxValue, int.MaxValue, int.MaxValue, int.MaxValue);
@@ -150,7 +179,7 @@ public static class MapLayout
                 return b == a ? 0 : b == -a && b != 0 ? 2 : 1;
             });
             (int, int, int, int) key =
-                (LayoutMetrics.MissingFanClasses(g, lane, s, L), graded, Math.Abs(2 * L - center2), L);
+                (LayoutMetrics.MissingFanClasses(g, lane, s, L, isStart), graded, Math.Abs(2 * L - center2), L);
             if (key.CompareTo(bestKey) < 0) { bestKey = key; bestL = L; }
         }
         lane[s] = bestL;
@@ -379,15 +408,16 @@ public static class MapLayout
     private static bool SlopeOk(LGraph g, int[] lane, int[] set, int delta, int maxSlope)
     {
         if (maxSlope >= int.MaxValue) return true;
-        int lastRow = g.RowsOrdered.Length - 1;
+        int bossRow = g.BossSpineStartRow();
+        int bossFloor = bossRow > 0 ? bossRow : g.RowsOrdered.Length - 1;
         var moving = new HashSet<int>(set);
         foreach ((int a, int b) in g.Edges)
         {
             bool am = moving.Contains(a), bm = moving.Contains(b);
             if (am == bm) continue;
-            // Start (row 0) fans out and the boss (last row) converges — those edges are inherently
+            // Start (row 0) fans out and the boss spine converges — those edges are inherently
             // steep (one node <-> many), so they're exempt from the slope cap.
-            if (g.RowOf[a] == 0 || g.RowOf[b] == 0 || g.RowOf[a] == lastRow || g.RowOf[b] == lastRow)
+            if (g.RowOf[a] == 0 || g.RowOf[b] == 0 || g.RowOf[a] >= bossFloor || g.RowOf[b] >= bossFloor)
                 continue;
             int la = lane[a] + (am ? delta : 0), lb = lane[b] + (bm ? delta : 0);
             if (Math.Abs(la - lb) > maxSlope) return false;
@@ -450,6 +480,39 @@ public static class LayoutInvariants
     }
 
     public static bool IsLegal(LGraph g, int[] lane) => Check(g, lane).Count == 0;
+
+    // Hard safety checks for continuous horizontal coordinates (AssignSmoothX): every node is
+    // placed at a finite x, and within each row consecutive nodes in vanilla column order are
+    // separated by at least `minGap` (default 1.0 lane unit minus numerical tolerance), guaranteeing
+    // zero overlap and exact crossing invariance.
+    public static List<string> CheckContinuous(LGraph g, double[] x, double minGap = 1.0 - 1e-5)
+    {
+        var violations = new List<string>();
+        if (x.Length != g.Nodes.Length)
+        {
+            violations.Add($"x count {x.Length} != node count {g.Nodes.Length}");
+            return violations;
+        }
+        for (int i = 0; i < x.Length; i++)
+            if (!double.IsFinite(x[i]))
+                violations.Add($"non-finite x[{i}] = {x[i]}");
+
+        for (int r = 0; r < g.RowCount; r++)
+        {
+            int[] row = g.RowsOrdered[r];
+            for (int i = 1; i < row.Length; i++)
+            {
+                int a = row[i - 1], b = row[i];
+                double gap = x[b] - x[a];
+                if (gap < minGap)
+                    violations.Add($"row {r}: nodes {a}(col {g.Nodes[a].Col}, x={x[a]:F4}) and " +
+                                   $"{b}(col {g.Nodes[b].Col}, x={x[b]:F4}) violate separation (gap={gap:F4} < {minGap:F4})");
+            }
+        }
+        return violations;
+    }
+
+    public static bool IsLegalContinuous(LGraph g, double[] x) => CheckContinuous(g, x).Count == 0;
 }
 
 public static class LayoutMetrics
@@ -491,12 +554,13 @@ public static class LayoutMetrics
         g.Edges.Length == 0 ? 0 : g.Edges.Max(e => Math.Abs(lane[e.From] - lane[e.To]));
 
     // Count of steep BODY edges (2+ lanes between floors), excluding the inherently-steep start
-    // fan-out (row 0) and boss converge-in (last row). This is the "ugly mid-map spike" count.
+    // fan-out (row 0) and boss converge-in (the boss spine, including two-boss acts).
     public static int SteepBodyEdges(LGraph g, int[] lane)
     {
-        int last = g.RowCount - 1;
+        int bossRow = g.BossSpineStartRow();
+        int bossFloor = bossRow > 0 ? bossRow : g.RowCount - 1;
         return g.Edges.Count(e =>
-            g.RowOf[e.From] != 0 && g.RowOf[e.To] != 0 && g.RowOf[e.From] != last && g.RowOf[e.To] != last
+            g.RowOf[e.From] != 0 && g.RowOf[e.To] != 0 && g.RowOf[e.From] < bossFloor && g.RowOf[e.To] < bossFloor
             && Math.Abs(lane[e.From] - lane[e.To]) >= 2);
     }
 
@@ -525,10 +589,11 @@ public static class LayoutMetrics
         Math.Sign(g.Nodes[k].Col - g.Nodes[s].Col);
 
     // If end node s sat at lane L, how many of its baseline fan-direction classes would have NO
-    // representative among its neighbors' current lanes? 0 = full "\|/" signature preserved.
-    internal static int MissingFanClasses(LGraph g, int[] lane, int s, int L)
+    // representative among its fan-side neighbors' current lanes? 0 = full "\|/" signature preserved.
+    internal static int MissingFanClasses(LGraph g, int[] lane, int s, int L, bool isStart)
     {
-        int[] kids = g.NeighborsOf[s];
+        int r = g.RowOf[s];
+        int[] kids = g.NeighborsOf[s].Where(k => isStart ? g.RowOf[k] > r : g.RowOf[k] < r).ToArray();
         var now = kids.Select(k => Math.Sign(lane[k] - L)).ToHashSet();
         return kids.Select(k => FanDir(g, s, k)).Distinct().Count(b => !now.Contains(b));
     }
@@ -540,14 +605,17 @@ public static class LayoutMetrics
     // full "\|/" spread at both ends.
     public static int FanClassesLost(LGraph g, int[] lane)
     {
-        int lost = 0, min = lane.Min(), max = lane.Max(), last = g.RowCount - 1;
-        foreach (int r in last == 0 ? new[] { 0 } : new[] { 0, last })
+        int lost = 0, min = lane.Min(), max = lane.Max();
+        int bossRow = g.BossSpineStartRow();
+        var endRows = new List<(int Row, bool IsStart)>();
+        if (g.RowCount >= 2 && g.RowsOrdered[0].Length == 1) endRows.Add((0, true));
+        if (bossRow > 0) endRows.Add((bossRow, false));
+        foreach ((int r, bool isStart) in endRows)
         {
-            if (g.RowsOrdered[r].Length != 1) continue;
             int s = g.RowsOrdered[r][0];
             int bestMissing = int.MaxValue;
             for (int L = min; L <= max && bestMissing > 0; L++)
-                bestMissing = Math.Min(bestMissing, MissingFanClasses(g, lane, s, L));
+                bestMissing = Math.Min(bestMissing, MissingFanClasses(g, lane, s, L, isStart));
             lost += bestMissing;
         }
         return lost;
@@ -566,6 +634,64 @@ public static class LayoutMetrics
                 if (Math.Sign(lane[a] - lane[x]) * Math.Sign(lane[b] - lane[y]) < 0) c++;
             }
         return c;
+    }
+
+    public static int ContinuousCrossings(LGraph g, double[] x)
+    {
+        int c = 0;
+        for (int i = 0; i < g.Edges.Length; i++)
+            for (int j = i + 1; j < g.Edges.Length; j++)
+            {
+                var (a, b) = g.Edges[i];
+                var (u, v) = g.Edges[j];
+                if (g.RowOf[a] != g.RowOf[u] || g.RowOf[b] != g.RowOf[v]) continue;
+                if (Math.Sign(x[a] - x[u]) * Math.Sign(x[b] - x[v]) < 0) c++;
+            }
+        return c;
+    }
+
+    // Mean angular turn (in degrees) across all straight-through (in=1, out=1) rooms at a given
+    // lane-to-row pixel aspect ratio. Directly measures perceived jaggedness along paths.
+    public static double MeanThroughTurnDeg(LGraph g, double[] x, double aspectRatio = 1.60)
+    {
+        int n = g.Nodes.Length;
+        var indeg = new int[n];
+        var outdeg = new int[n];
+        var inOf = new int[n];
+        var outOf = new int[n];
+        foreach ((int f, int t) in g.Edges) { outdeg[f]++; outOf[f] = t; indeg[t]++; inOf[t] = f; }
+        double sum = 0.0;
+        int count = 0;
+        for (int i = 0; i < n; i++)
+        {
+            if (indeg[i] != 1 || outdeg[i] != 1) continue;
+            int dr1 = Math.Max(1, g.RowOf[i] - g.RowOf[inOf[i]]);
+            int dr2 = Math.Max(1, g.RowOf[outOf[i]] - g.RowOf[i]);
+            double a1 = Math.Atan2((x[i] - x[inOf[i]]) * aspectRatio, dr1) * (180.0 / Math.PI);
+            double a2 = Math.Atan2((x[outOf[i]] - x[i]) * aspectRatio, dr2) * (180.0 / Math.PI);
+            sum += Math.Abs(a2 - a1);
+            count++;
+        }
+        return count == 0 ? 0.0 : sum / count;
+    }
+
+    // Total discrete second-derivative bending energy over straight-through chains.
+    public static double ThroughBendEnergy(LGraph g, double[] x)
+    {
+        int n = g.Nodes.Length;
+        var indeg = new int[n];
+        var outdeg = new int[n];
+        var inOf = new int[n];
+        var outOf = new int[n];
+        foreach ((int f, int t) in g.Edges) { outdeg[f]++; outOf[f] = t; indeg[t]++; inOf[t] = f; }
+        double sum = 0.0;
+        for (int i = 0; i < n; i++)
+        {
+            if (indeg[i] != 1 || outdeg[i] != 1) continue;
+            double curv = x[outOf[i]] - 2.0 * x[i] + x[inOf[i]];
+            sum += curv * curv;
+        }
+        return sum;
     }
 }
 
@@ -619,7 +745,8 @@ public static class OptimalLayout
 
         int last = rowCount - 1;
         bool startFan = rowCount >= 2 && rows[0].Length == 1;
-        bool bossFan = rowCount >= 2 && rows[last].Length == 1;
+        int bossRow = g.BossSpineStartRow();
+        bool bossFan = bossRow > 0;
         bool alignEnds = startFan && bossFan;
 
         var pos = new int[g.Nodes.Length];
@@ -639,7 +766,7 @@ public static class OptimalLayout
                                           .ThenBy(e => g.Nodes[e.To].Col))
         {
             int r = g.RowOf[f];
-            bool fromStart = startFan && r == 0, intoBoss = bossFan && r + 1 == last;
+            bool fromStart = startFan && r == 0, intoBoss = bossFan && r + 1 == bossRow;
             int dir = fromStart ? Math.Sign(g.Nodes[t].Col - g.Nodes[f].Col)
                     : intoBoss ? Math.Sign(g.Nodes[f].Col - g.Nodes[t].Col) : 0;
             gapEdges[r].Add((pos[f], pos[t], fromStart || intoBoss, dir));
@@ -665,15 +792,15 @@ public static class OptimalLayout
                     trans[r][a] = new long[choices[r + 1].Count];
                     for (int b = 0; b < choices[r + 1].Count; b++)
                         trans[r][a][b] = Transition(width, choices[r][a], choices[r + 1][b], gapEdges[r], linked[r],
-                                                    startFan && r == 0, bossFan && r + 1 == last);
+                                                    startFan && r == 0, bossFan && r + 1 == bossRow);
                 }
             }
 
             int[] endLanes = alignEnds ? Enumerable.Range(0, width).ToArray() : new[] { -1 };
             foreach (int endLane in endLanes)
             {
-                // Forward DP. With aligned ends, floors 0 and last may only take [endLane] (single-
-                // node choices are enumerated in lane order, so that's choice index endLane).
+                // Forward DP. With aligned ends, row 0 and every trailing boss-spine row (r >= bossRow,
+                // covering both single-boss and two-boss acts) may only take [endLane].
                 long[] cost = new long[choices[0].Count];
                 for (int a = 0; a < cost.Length; a++)
                     cost[a] = endLane >= 0 && a != endLane ? -1 : rowCost[0][a];
@@ -686,7 +813,7 @@ public static class OptimalLayout
                     {
                         next[b] = -1;
                         back[r][b] = -1;
-                        if (endLane >= 0 && r == last && b != endLane) continue;
+                        if (endLane >= 0 && r >= bossRow && b != endLane) continue;
                         for (int a = 0; a < cost.Length; a++)
                         {
                             long t = trans[r - 1][a][b];
@@ -762,5 +889,333 @@ public static class OptimalLayout
         }
         Rec(0, 0);
         return all;
+    }
+}
+
+// CONTINUOUS MINIMUM-BENDING-ENERGY LAYOUT (2026-11-19) — Hybrid Vertical-Rail + Curvature QP.
+//
+// Solves for continuous horizontal coordinates x in R^N minimizing a strictly convex objective:
+//   J(x) = sum_{(u,v) in E} [ wL2 * e_uv * (x_v - x_u)^2 + wHuber * body_uv * sqrt((x_v - x_u)^2 + eps^2) ]
+//        + sum_{u->v->w}    wBend * w_uvw * (x_w - 2*x_v + x_u)^2
+//        + sum_{v in V}     wCompact * x_v^2
+// subject to the exact convex polytope P:
+//   * Within every floor r, consecutive rooms in vanilla column order satisfy x[i+1] - x[i] >= sep[i] >= 1.0
+//     (guarantees zero overlap and exact crossing invariance by construction).
+//   * Single-node Start (row 0) and trailing Boss spine (Boss, plus SecondBoss if present) are pinned
+//     to x = 0 so the act enters and exits along a single vertical axis.
+//
+// Why this eliminates jagged diagonals:
+//   * Second-derivative curvature (x_w - 2*x_v + x_u)^2 directly penalizes path kinks and zigzags
+//     across 3 consecutive floors (a first-order DP cannot see bends at all).
+//   * Continuous coordinates allow symmetric 2-way forks, diamonds, and centered merges instead of
+//     forcing lopsided integer-column spikes.
+//   * Pseudo-Huber slope snaps parallel straight-through runs to crisp vertical tracks while keeping
+//     required horizontal transitions smooth and gently angled.
+//   * Subtle extra separation (UnlinkedGap = 1.15) between non-sibling neighbors adds Gestalt breathing
+//     room between independent macro-routes.
+//
+// Solved to high precision (<1e-8) in <1 ms via O'Donoghue-Candes adaptive-restart FISTA with exact
+// O(k_r) Pool-Adjacent-Violators (PAV) isotonic projection per floor. Runs strictly in canonical
+// (Row, Col) node order so results are bit-for-bit independent of input node enumeration order.
+public static class ContinuousMapLayout
+{
+    public const double SlopeL2Weight = 0.55;
+    public const double SlopeHuberWeight = 2.20;
+    public const double HuberEps = 0.025;
+    public const double FanSlopeFactor = 0.22;
+    public const double BendWeight = 3.80;
+    public const double BranchBendFactor = 0.22;
+    public const double CompactWeight = 0.025;
+    public const double UnlinkedGap = 1.15;
+    private const int MaxIterations = 2500;
+    private const double ConvergenceTol = 1e-8;
+
+    public static double[] Solve(LGraph g)
+    {
+        int n = g.Nodes.Length;
+        if (n == 0) return Array.Empty<double>();
+        if (n == 1) return new[] { 0.0 };
+
+        // Map LGraph nodes to canonical (Row, Col) indices 0..n-1 so floating-point accumulation
+        // order is a pure function of graph topology (100% invariant to input node ID order).
+        int rCount = g.RowCount;
+        var canonToOrig = new int[n];
+        var origToCanon = new int[n];
+        var canonRows = new int[rCount][];
+        var canonRowOf = new int[n];
+        int nextCanon = 0;
+        for (int r = 0; r < rCount; r++)
+        {
+            int[] origRow = g.RowsOrdered[r];
+            var crow = new int[origRow.Length];
+            for (int i = 0; i < origRow.Length; i++)
+            {
+                int orig = origRow[i];
+                int c = nextCanon++;
+                canonToOrig[c] = orig;
+                origToCanon[orig] = c;
+                crow[i] = c;
+                canonRowOf[c] = r;
+            }
+            canonRows[r] = crow;
+        }
+
+        // Canonical sorted edge list (by canonical u, then v).
+        var edgeSet = new List<(int U, int V)>(g.Edges.Length);
+        foreach ((int f, int t) in g.Edges)
+            edgeSet.Add((origToCanon[f], origToCanon[t]));
+        edgeSet.Sort((a, b) => a.U != b.U ? a.U.CompareTo(b.U) : a.V.CompareTo(b.V));
+        // Deduplicate defensively.
+        var edges = new List<(int U, int V)>(edgeSet.Count);
+        for (int i = 0; i < edgeSet.Count; i++)
+            if (i == 0 || edgeSet[i] != edgeSet[i - 1])
+                edges.Add(edgeSet[i]);
+
+        var parents = new List<int>[n];
+        var children = new List<int>[n];
+        for (int i = 0; i < n; i++) { parents[i] = new List<int>(); children[i] = new List<int>(); }
+        foreach ((int u, int v) in edges)
+        {
+            children[u].Add(v);
+            parents[v].Add(u);
+        }
+
+        bool hasSingleStart = rCount >= 2 && canonRows[0].Length == 1;
+        int bossStart = g.BossSpineStartRow();
+        bool hasBossSpine = bossStart > 0;
+        var pinned = new bool[n];
+        bool anyPinned = false;
+        if (hasSingleStart)
+        {
+            pinned[canonRows[0][0]] = true;
+            anyPinned = true;
+        }
+        if (hasBossSpine)
+        {
+            for (int r = bossStart; r < rCount; r++)
+            {
+                pinned[canonRows[r][0]] = true;
+                anyPinned = true;
+            }
+        }
+
+        // Within-row minimum separation: 1.0 between siblings sharing a parent or child,
+        // UnlinkedGap between unrelated adjacent strands for subtle macro-route clarity.
+        var rowSeps = new double[rCount][];
+        for (int r = 0; r < rCount; r++)
+        {
+            int[] row = canonRows[r];
+            var seps = new double[Math.Max(0, row.Length - 1)];
+            for (int i = 0; i < seps.Length; i++)
+            {
+                int a = row[i], b = row[i + 1];
+                bool shared = SharesAny(parents[a], parents[b]) || SharesAny(children[a], children[b]);
+                seps[i] = shared ? 1.0 : UnlinkedGap;
+            }
+            rowSeps[r] = seps;
+        }
+
+        // Precompute 2-edge chains (u -> v -> w) for second-derivative curvature energy.
+        var chains = new List<(int U, int V, int W, double Weight)>();
+        for (int v = 0; v < n; v++)
+        {
+            List<int> ps = parents[v];
+            List<int> cs = children[v];
+            if (ps.Count == 0 || cs.Count == 0) continue;
+            bool isThru = ps.Count == 1 && cs.Count == 1;
+            double wc = isThru ? 1.0 : BranchBendFactor / (ps.Count * cs.Count);
+            foreach (int u in ps)
+                foreach (int w in cs)
+                    chains.Add((u, v, w, wc));
+        }
+
+        // Edge weights & Lipschitz upper bound for guaranteed monotone FISTA step size.
+        var edgeIsFan = new bool[edges.Count];
+        var deg = new int[n];
+        for (int e = 0; e < edges.Count; e++)
+        {
+            (int u, int v) = edges[e];
+            deg[u]++;
+            deg[v]++;
+            edgeIsFan[e] = (hasSingleStart && canonRowOf[u] == 0)
+                        || (hasBossSpine && canonRowOf[v] >= bossStart);
+        }
+        int maxDeg = 0;
+        for (int i = 0; i < n; i++) if (deg[i] > maxDeg) maxDeg = deg[i];
+        double lSlope = 2.0 * maxDeg * (2.0 * SlopeL2Weight + SlopeHuberWeight / HuberEps);
+
+        var bendDiag = new double[n];
+        foreach ((int u, int v, int w, double wc) in chains)
+        {
+            double c = 2.0 * BendWeight * wc;
+            bendDiag[u] += 4.0 * c;
+            bendDiag[v] += 8.0 * c;
+            bendDiag[w] += 4.0 * c;
+        }
+        double lBend = 0.0;
+        for (int i = 0; i < n; i++) if (bendDiag[i] > lBend) lBend = bendDiag[i];
+        double step = 1.0 / (lSlope + lBend + 2.0 * CompactWeight + 1.0);
+
+        // Deterministic initial guess from centered raw columns.
+        int minCol = int.MaxValue, maxCol = int.MinValue;
+        for (int c = 0; c < n; c++)
+        {
+            int col = g.Nodes[canonToOrig[c]].Col;
+            if (col < minCol) minCol = col;
+            if (col > maxCol) maxCol = col;
+        }
+        double midCol = 0.5 * (minCol + maxCol);
+
+        var x = new double[n];
+        for (int c = 0; c < n; c++)
+            x[c] = g.Nodes[canonToOrig[c]].Col - midCol;
+        ProjectAll(x, canonRows, rowSeps, pinned);
+
+        var y = (double[])x.Clone();
+        var xNext = new double[n];
+        var grad = new double[n];
+        double momT = 1.0;
+
+        for (int iter = 0; iter < MaxIterations; iter++)
+        {
+            Array.Clear(grad, 0, n);
+
+            // 1. Slope gradient (quadratic + pseudo-Huber vertical-rail pull on body edges).
+            for (int e = 0; e < edges.Count; e++)
+            {
+                (int u, int v) = edges[e];
+                bool isFan = edgeIsFan[e];
+                double ew = isFan ? FanSlopeFactor : 1.0;
+                double d = y[v] - y[u];
+                double gd = 2.0 * SlopeL2Weight * ew * d;
+                if (!isFan)
+                    gd += SlopeHuberWeight * (d / Math.Sqrt(d * d + HuberEps * HuberEps));
+                grad[u] -= gd;
+                grad[v] += gd;
+            }
+
+            // 2. Curvature / bending energy gradient: d/dy [ BendWeight * wc * (y_w - 2*y_v + y_u)^2 ].
+            for (int ci = 0; ci < chains.Count; ci++)
+            {
+                (int u, int v, int w, double wc) = chains[ci];
+                double curv = y[w] - 2.0 * y[v] + y[u];
+                double c = 2.0 * BendWeight * wc * curv;
+                grad[u] += c;
+                grad[v] -= 2.0 * c;
+                grad[w] += c;
+            }
+
+            // 3. Gentle centering / compactness.
+            for (int i = 0; i < n; i++)
+                grad[i] += 2.0 * CompactWeight * y[i];
+
+            for (int i = 0; i < n; i++)
+                xNext[i] = y[i] - step * grad[i];
+            ProjectAll(xNext, canonRows, rowSeps, pinned);
+
+            // O'Donoghue-Candes adaptive momentum restart + convergence check.
+            double dot = 0.0;
+            double maxDiff = 0.0;
+            for (int i = 0; i < n; i++)
+            {
+                double diff = xNext[i] - x[i];
+                double absDiff = Math.Abs(diff);
+                if (absDiff > maxDiff) maxDiff = absDiff;
+                dot += (y[i] - xNext[i]) * diff;
+            }
+
+            if (dot > 0.0)
+            {
+                momT = 1.0;
+                Array.Copy(xNext, y, n);
+            }
+            else
+            {
+                double tNext = 0.5 * (1.0 + Math.Sqrt(1.0 + 4.0 * momT * momT));
+                double beta = (momT - 1.0) / tNext;
+                for (int i = 0; i < n; i++)
+                    y[i] = xNext[i] + beta * (xNext[i] - x[i]);
+                momT = tNext;
+            }
+
+            Array.Copy(xNext, x, n);
+            if (maxDiff < ConvergenceTol && iter > 20)
+                break;
+        }
+
+        if (!anyPinned)
+        {
+            double lo = x[0], hi = x[0];
+            for (int i = 1; i < n; i++) { if (x[i] < lo) lo = x[i]; if (x[i] > hi) hi = x[i]; }
+            double shift = 0.5 * (lo + hi);
+            for (int i = 0; i < n; i++) x[i] -= shift;
+        }
+
+        // Map canonical solution back to LGraph's node indices.
+        var result = new double[n];
+        for (int c = 0; c < n; c++)
+            result[canonToOrig[c]] = x[c];
+        return result;
+    }
+
+    private static bool SharesAny(List<int> a, List<int> b)
+    {
+        for (int i = 0; i < a.Count; i++)
+            for (int j = 0; j < b.Count; j++)
+                if (a[i] == b[j]) return true;
+        return false;
+    }
+
+    private static void ProjectAll(double[] x, int[][] rows, double[][] rowSeps, bool[] pinned)
+    {
+        for (int i = 0; i < x.Length; i++)
+            if (pinned[i]) x[i] = 0.0;
+
+        for (int r = 0; r < rows.Length; r++)
+        {
+            int[] row = rows[r];
+            int k = row.Length;
+            if (k <= 1) continue;
+            ProjectRowPAV(x, row, rowSeps[r]);
+        }
+
+        for (int i = 0; i < x.Length; i++)
+            if (pinned[i]) x[i] = 0.0;
+    }
+
+    // Exact Euclidean projection onto { x[row[i+1]] - x[row[i]] >= seps[i] } via Pool-Adjacent-Violators.
+    private static void ProjectRowPAV(double[] x, int[] row, double[] seps)
+    {
+        int k = row.Length;
+        Span<double> offsets = stackalloc double[k];
+        Span<double> blockSum = stackalloc double[k];
+        Span<int> blockCount = stackalloc int[k];
+
+        offsets[0] = 0.0;
+        for (int i = 1; i < k; i++)
+            offsets[i] = offsets[i - 1] + seps[i - 1];
+
+        int bLen = 0;
+        for (int i = 0; i < k; i++)
+        {
+            blockSum[bLen] = x[row[i]] - offsets[i];
+            blockCount[bLen] = 1;
+            bLen++;
+            while (bLen >= 2 && blockSum[bLen - 2] * blockCount[bLen - 1] > blockSum[bLen - 1] * blockCount[bLen - 2])
+            {
+                blockSum[bLen - 2] += blockSum[bLen - 1];
+                blockCount[bLen - 2] += blockCount[bLen - 1];
+                bLen--;
+            }
+        }
+
+        int idx = 0;
+        for (int b = 0; b < bLen; b++)
+        {
+            double mean = blockSum[b] / blockCount[b];
+            int cnt = blockCount[b];
+            for (int c = 0; c < cnt; c++, idx++)
+                x[row[idx]] = mean + offsets[idx];
+        }
     }
 }

@@ -1,8 +1,15 @@
 # STS2 screen system — reference
 
 How Slay the Spire 2 (`sts2.dll`) manages full-screen views, captured so we don't have to
-re-decompile it. All types are under `MegaCrit.Sts2.Core`. Used by DeckView's minimap, which is
-implemented as a **capstone screen** (see `MiniMapScreen` in `DeckViewMod.cs`).
+re-decompile it. All types are under `MegaCrit.Sts2.Core`.
+
+> **Architecture note (2026-11-19):** FlatMap previously used a custom `MiniMapScreen : ICapstoneScreen`
+> hosted in `NCapstoneContainer`, which required hijacking `M`, patching `NTopBarMapButton`, and
+> borrowing `_mapLegend`/`Drawings`/`_drawingTools`. FlatMap now **drives the real `NMapScreen`
+> in place** — keeping all `NMapScreen` signals (`Opened`/`Closed`, including shop music),
+> `NMapRoom` locking, `NOverlayStack`, `ActiveScreenContext`, `NMapPoint` hitboxes/VFX/Spine
+> bosses, drawings, and controller navigation 100% native. The capstone reference below remains
+> useful for DeckView (`NCardsViewScreen`, `NCardPileScreen`) and general STS2 UI work.
 
 There is **no single `NScreen` base class**. Instead there's a shared interface `IScreenContext`,
 a capstone interface `ICapstoneScreen`, several parallel "screen systems" (rooms, overlays,

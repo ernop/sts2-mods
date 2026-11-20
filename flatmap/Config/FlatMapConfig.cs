@@ -7,16 +7,17 @@ internal static class FlatMapConfig
 {
     private const string Path = "user://flatmap.cfg";
     // Pre-flip, the combined DeckView mod stored the map settings here; read once as the seed for
-    // a fresh flatmap.cfg. Only [map] flat migrates — compress deliberately restarts at the new
-    // OFF default. Never written.
+    // a fresh flatmap.cfg. Only [map] flat migrates — compress starts at the smooth-map ON default.
+    // Never written.
     private const string LegacyPath = "user://deckview.cfg";
 
     private static bool _loaded;
     private static bool _canSave = true;
     private static bool _preferFlatMap;
-    // Compress defaults OFF (2026-07-28): with the vertical one-screen layout, the raw game
-    // columns are the most vanilla-faithful view. The choice persists for the user's lifetime.
-    private static bool _compressMap;
+    // Compress defaults ON (2026-11-19): uses the smooth continuous rail-and-curvature layout
+    // with rim-fanned S-curve paths. Toggling it OFF shows exact vanilla 1:1 columns with
+    // straight paths. The user's explicit choice persists across sessions.
+    private static bool _compressMap = true;
     // Ghosting unreachable-and-unvisited rooms defaults OFF (2026-08-02): vanilla has no
     // reachability concept, so new users see every room at the vanilla tint until they opt in.
     private static bool _hideUnreachable;
@@ -91,7 +92,7 @@ internal static class FlatMapConfig
         }
 
         _preferFlatMap = cfg.GetValue("map", "flat", false).AsBool();
-        _compressMap = cfg.GetValue("map", "compress", false).AsBool();
+        _compressMap = cfg.GetValue("map", "compress", true).AsBool();
         _hideUnreachable = cfg.GetValue("map", "hide_unreachable", false).AsBool();
         _dumpMapGraph = cfg.GetValue("debug", "dump_map_graph", false).AsBool();
     }

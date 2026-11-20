@@ -5,20 +5,22 @@ using System.Reflection;
 using System.Reflection.Emit;
 using System.Runtime.ExceptionServices;
 using HarmonyLib;
-using MegaCrit.Sts2.Core.ControllerInput;
 using MegaCrit.Sts2.Core.Logging;
-using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using MegaCrit.Sts2.Core.Nodes.Cards;
 using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
+using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
 using MegaCrit.Sts2.Core.Nodes.Screens;
+using MegaCrit.Sts2.Core.Nodes.Screens.CardLibrary;
+using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
+using MegaCrit.Sts2.Core.Nodes.Screens.ScreenContext;
 
 namespace DeckView;
 
 /// <summary>
-/// Owns DeckView' all-or-nothing Harmony lifecycle. A game update that moves a hook leaves
-/// the unmodified game running and records every missing member in the log. Same policy as the
-/// deckview (map) mod, but a fully independent copy — the two mods share no assembly.
+/// Owns DeckView's all-or-nothing Harmony lifecycle. A game update that moves a hook leaves
+/// the unmodified game running and records every missing member in the log. Independent copy
+/// from FlatMap — the two mods share no assembly.
 /// </summary>
 internal static class ModRuntime
 {
@@ -44,6 +46,7 @@ internal static class ModRuntime
         catch (Exception ex)
         {
 #if !PUBLIC_BUILD
+            Log.Error($"[DeckView] STRICT (dev) build: compatibility preflight threw: {ex}");
             throw new InvalidOperationException("[DeckView] STRICT (dev) build: compatibility preflight threw — fix HookCatalog or CompiledReferences.", ex);
 #else
             LogDisabled($"compatibility preflight failed: {ex}");
@@ -54,8 +57,7 @@ internal static class ModRuntime
         {
             string list = string.Join(", ", missing);
 #if !PUBLIC_BUILD
-            // Dev build: a missing hook is either a real game change or a wrong HookCatalog entry —
-            // either way we want it LOUD, not a silent revert that reads as "mod does nothing".
+            Log.Error($"[DeckView] STRICT (dev) build: preflight found missing hooks: {list}");
             throw new InvalidOperationException($"[DeckView] STRICT (dev) build: preflight found missing hooks: {list}");
 #else
             LogDisabled("incompatible game build; missing hooks: " + list);
@@ -75,7 +77,6 @@ internal static class ModRuntime
             Enabled = false;
             try
             {
-                // PatchAll is not transactional. Remove any classes it applied before the failure.
                 _harmony.UnpatchAll(HarmonyId);
             }
             catch (Exception rollback)
@@ -84,7 +85,7 @@ internal static class ModRuntime
                          $"disabled by their runtime guards: {rollback}");
             }
 #if !PUBLIC_BUILD
-            // Dev build: a PatchAll failure is our bug (bad patch attribute) — crash loudly.
+            Log.Error($"[DeckView] STRICT (dev) build: Harmony setup failed: {ex}");
             throw new InvalidOperationException("[DeckView] STRICT (dev) build: Harmony setup failed — fix before release.", ex);
 #else
             LogDisabled($"Harmony setup failed: {ex}");
@@ -97,10 +98,7 @@ internal static class ModRuntime
     internal static void Disable(string location, Exception ex)
     {
 #if !PUBLIC_BUILD
-        // Dev/local builds are STRICT: never mask our own bugs. Re-throw (preserving the stack) so an
-        // unexpected failure in our patch code crashes loudly. Public builds (PUBLIC_BUILD) fall
-        // through to the revert-with-warning below instead. (Compatibility preflight is separate and
-        // reverts+warns in both.)
+        Log.Error($"[DeckView] STRICT (dev) build failure in {location}: {ex}");
         ExceptionDispatchInfo.Capture(ex).Throw();
 #else
         if (!Enabled)
@@ -128,7 +126,7 @@ internal static class ModRuntime
 
 /// <summary>
 /// Preflight catalog for every non-public or string-named game member DeckView relies on.
-/// Keep this list synchronized with scripts/verify-hooks.sh (the "mini-cards" section).
+/// Keep this list synchronized with scripts/verify-hooks.sh (the DeckView section).
 /// </summary>
 internal static class HookCatalog
 {
@@ -137,14 +135,19 @@ internal static class HookCatalog
         var missing = new List<string>();
 
         Method(typeof(NCardGrid), "ConnectSignals", missing);
+        Method(typeof(NCardGrid), "InitGrid", missing, Type.EmptyTypes);
         Method(typeof(NCardGrid), "_ExitTree", missing);
         Method(typeof(NCardGrid), "_Process", missing);
         Property(typeof(NCardGrid), "CardPadding", missing);
-        Property(typeof(NCardGrid), "CurrentlyDisplayedCardHolders", missing);
+        Property(typeof(NCardGrid), "CanScroll", missing);
         Field(typeof(NCardGrid), "_cardSize", missing);
         Field(typeof(NCardGrid), "_needsReinit", missing);
+        Field(typeof(NCardGrid), "_cardRows", missing);
+        Field(typeof(NCardGrid), "_cardsAnimatingOutForSetCards", missing);
+        Field(typeof(NCardGrid), "_scrollContainer", missing);
 
         Property(typeof(NCardHolder), "SmallScale", missing);
+        Property(typeof(NCardHolder), "HoverScale", missing);
         Property(typeof(NCardHolder), "Hitbox", missing);
         Method(typeof(NCardHolder), "RefreshFocusState", missing);
         Field(typeof(NCardHolder), "_isHovered", missing);
@@ -152,18 +155,33 @@ internal static class HookCatalog
         Field(typeof(NCardHolder), "_hoverTween", missing);
         Method(typeof(NCardHolder), "DoCardHoverEffects", missing);
         Method(typeof(NCardHolder), "OnFocus", missing);
+        Method(typeof(NCardHolder), "OnUnfocus", missing);
         Method(typeof(NCardHolder), "CreateHoverTips", missing);
         Method(typeof(NCardHolder), "ClearHoverTips", missing);
-        Property(typeof(NCardHolder), "HoverScale", missing);
+
         Method(typeof(NGridCardHolder), "Create", missing);
+        Method(typeof(NGridCardHolder), "OnFocus", missing);
         if (AccessTools.DeclaredPropertyGetter(typeof(NGridCardHolder), "SmallScale") != null)
             missing.Add("NGridCardHolder must inherit SmallScale without overriding it");
+        if (AccessTools.DeclaredMethod(typeof(NGridCardHolder), "OnUnfocus") != null)
+            missing.Add("NGridCardHolder overrides OnUnfocus (base patch would need update)");
         Field(typeof(NClickableControl), "_isHovered", missing);
 
         Method(typeof(NCardsViewScreen), "ConnectSignals", missing);
         Field(typeof(NCardsViewScreen), "_showUpgrades", missing);
 
+        Method(typeof(NCardPileScreen), "_Ready", missing);
+        Field(typeof(NCardPileScreen), "_backButton", missing);
+
+        Method(typeof(NCardLibrary), "_Ready", missing);
+        Field(typeof(NCardLibrary), "_viewUpgrades", missing);
+        Field(typeof(NCardLibrary), "_viewMultiplayerCards", missing);
+
+        Method(typeof(NCardGridSelectionScreen), "ConnectSignalsAndInitGrid", missing);
+        Field(typeof(NCardGridSelectionScreen), "_peekButton", missing);
+
         Property(typeof(NControllerManager), "IsUsingDirectionalNavigation", missing);
+        Method(typeof(ActiveScreenContext), "GetCurrentScreen", missing);
 
         return missing;
     }
@@ -192,9 +210,8 @@ internal static class HookCatalog
 
 /// <summary>
 /// Preflight for the game members DeckView's compiled code names directly (public calls, fields,
-/// types). .NET binds those only when the calling method first runs (forcing JIT compilation does
-/// not bind them), so a renamed or re-signatured member would otherwise fail mid-run; resolving
-/// every member token in our IL against the loaded game reports it here instead.
+/// types). .NET binds those only when the calling method first runs; resolving every member token
+/// in our IL against the loaded game catches renames at startup instead of mid-run.
 /// </summary>
 internal static class CompiledReferences
 {
@@ -279,7 +296,7 @@ internal static class CompiledReferences
                         case OperandType.InlineSwitch:
                             i += 4 + 4 * BitConverter.ToInt32(il, i);
                             break;
-                        default: // InlineBrTarget, InlineI, InlineSig, InlineString, ShortInlineR
+                        default:
                             i += 4;
                             break;
                     }
@@ -290,15 +307,17 @@ internal static class CompiledReferences
     }
 }
 
-// Reflection calls remain fail-fast internally, but ModRuntime preflights all static lookups before
-// applying any patch and every patch boundary catches unexpected runtime failures.
 internal static class Reflect
 {
     internal static FieldInfo Field(Type type, string name) =>
         AccessTools.Field(type, name) ?? throw new MissingFieldException(type.FullName, name);
 
-    internal static MethodInfo Method(Type type, string name) =>
-        AccessTools.Method(type, name) ?? throw new MissingMethodException(type.FullName, name);
+    internal static MethodInfo Method(Type type, string name, Type[]? args = null) =>
+        (args == null ? AccessTools.Method(type, name) : AccessTools.Method(type, name, args))
+        ?? throw new MissingMethodException(type.FullName, name);
+
+    internal static MethodInfo PropertyGetter(Type type, string name) =>
+        AccessTools.PropertyGetter(type, name) ?? throw new MissingMemberException(type.FullName, name);
 }
 
 internal static class Dbg

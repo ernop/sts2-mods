@@ -56,7 +56,9 @@ internal static class Runner
         SafetyNetTest();
         ExteriorSpikeMetricTest();
         FanPreservationTest(seedCount: 300);
+        TwoBossTests(seedCount: 200);
         PropertyTests(seedCount: 500);
+        SmoothLayoutTests(seedCount: 300);
 
         Console.WriteLine();
         Console.WriteLine(_failures == 0 ? "ALL GATES PASSED" : $"{_failures} FAILURE(S)");
@@ -507,6 +509,23 @@ internal static class Runner
             Expect(l[g.RowsOrdered[0][0]] == l[g.RowsOrdered[g.RowCount - 1][0]], "underdocks: start and boss lanes differ");
             Expect(LayoutMetrics.SteepBodyEdges(g, l) == 0, "underdocks: a body edge jumps 2+ lanes");
         });
+
+        // 8. Two-boss act (Double Boss modifier: Boss 1 on row 16 -> Boss 2 on row 17). The fan
+        //    converging into Boss 1 must still be treated as the boss fan (not penalized as steep
+        //    body edges) and Start, Boss 1, and Boss 2 must share one aligned spine lane.
+        LGraph twoBoss = FromDump(UnderdocksNodes + " 17,3", UnderdocksEdges + " 16,3->17,3");
+        Run("two-boss-underdocks", twoBoss, (g, baseLen, len, baseLn, ln) =>
+        {
+            int[] l = MapLayout.AssignLanes(g);
+            int startLane = l[g.RowsOrdered[0][0]];
+            int boss1Lane = l[g.RowsOrdered[g.RowCount - 2][0]];
+            int boss2Lane = l[g.RowsOrdered[g.RowCount - 1][0]];
+            Expect(g.BossSpineStartRow() == g.RowCount - 2, "two-boss: BossSpineStartRow did not find Boss 1");
+            Expect(startLane == boss1Lane && boss1Lane == boss2Lane,
+                $"two-boss: spine misaligned (start={startLane}, boss1={boss1Lane}, boss2={boss2Lane})");
+            Expect(LayoutMetrics.SteepBodyEdges(g, l) == 0, "two-boss: a body edge jumps 2+ lanes");
+            Expect(LayoutMetrics.FanClassesLost(g, l) == 0, "two-boss: boss/start fan direction class lost");
+        });
     }
 
     // A case runner: asserts legality (hard) + the never-worse guarantees (hard), prints metrics,
@@ -547,7 +566,14 @@ internal static class Runner
         int[] row1 = g.RowsOrdered[1];
         if (row1.Length >= 2) { int t = inverted[row1[0]]; inverted[row1[0]] = inverted[row1[1]]; inverted[row1[1]] = t; }
         Expect(!LayoutInvariants.IsLegal(g, inverted), "checker failed to flag a col-order inversion");
-        Console.WriteLine("  checker rejects overlap + inversion: ok");
+
+        double[] tooClose = g.BaselineLanes().Select(v => (double)v).ToArray();
+        if (row1.Length >= 2) tooClose[row1[1]] = tooClose[row1[0]] + 0.5;
+        Expect(!LayoutInvariants.IsLegalContinuous(g, tooClose), "continuous checker failed to flag < 1.0 spacing");
+        double[] nonFinite = g.BaselineLanes().Select(v => (double)v).ToArray();
+        nonFinite[0] = double.NaN;
+        Expect(!LayoutInvariants.IsLegalContinuous(g, nonFinite), "continuous checker failed to flag NaN");
+        Console.WriteLine("  checker rejects overlap + inversion + continuous spacing/NaN: ok");
     }
 
     // The screenshot case distilled: one body row reaches a lane farther left than both neighbors.
@@ -573,6 +599,44 @@ internal static class Runner
         Expect(LayoutMetrics.ExteriorSpikeCount(g, extended) == 0,
             "expected extending the adjacent outer lane to remove the spike");
         Console.WriteLine("  adjacent outer extension removes one-floor spike: ok");
+    }
+
+    // ---- two-boss property tests (Start -> body -> Boss1 -> Boss2) -------------------------
+    private static void TwoBossTests(int seedCount)
+    {
+        Console.WriteLine($"-- two-boss tests ({seedCount} random two-boss acts) --");
+        int illegal = 0, misaligned = 0, fanLost = 0, orderLeaks = 0;
+        for (int seed = 0; seed < seedCount; seed++)
+        {
+            var rng = new Random(seed + 42_000);
+            LGraph body = RandomStsMap(rng);
+            int bodyRows = body.Nodes.Max(n => n.Row) + 1;
+            int startCol = 3, bossCol = 3;
+            var b = new B();
+            foreach (LNode n in body.Nodes) b.Node(n.Row + 1, n.Col);
+            foreach ((int f, int t) in body.Edges)
+                b.E(body.Nodes[f].Row + 1, body.Nodes[f].Col, body.Nodes[t].Row + 1, body.Nodes[t].Col);
+            foreach (int id in body.RowsOrdered[0])
+                b.E(0, startCol, body.Nodes[id].Row + 1, body.Nodes[id].Col);
+            int boss1Row = bodyRows + 1, boss2Row = bodyRows + 2;
+            foreach (int id in body.RowsOrdered[body.RowCount - 1])
+                b.E(body.Nodes[id].Row + 1, body.Nodes[id].Col, boss1Row, bossCol);
+            b.E(boss1Row, bossCol, boss2Row, bossCol);
+            LGraph g = b.G();
+
+            int[] lane = MapLayout.AssignLanes(g);
+            if (!LayoutInvariants.IsLegal(g, lane)) illegal++;
+            int s = lane[g.RowsOrdered[0][0]];
+            int b1 = lane[g.RowsOrdered[g.RowCount - 2][0]];
+            int b2 = lane[g.RowsOrdered[g.RowCount - 1][0]];
+            if (s != b1 || b1 != b2) misaligned++;
+            if (LayoutMetrics.FanClassesLost(g, lane) > 0) fanLost++;
+            if (!SameLanesUnderReorder(g, new Random(seed + 777_777))) orderLeaks++;
+        }
+        Console.WriteLine($"  illegal: {illegal}   misaligned: {misaligned}   fanLost: {fanLost}   order-leaks: {orderLeaks}");
+        Expect(illegal == 0, $"{illegal} two-boss maps produced an ILLEGAL layout");
+        Expect(misaligned == 0, $"{misaligned} two-boss maps failed to align Start/Boss1/Boss2");
+        Expect(orderLeaks == 0, $"{orderLeaks} two-boss maps changed layout under node reordering");
     }
 
     // ---- property tests over hundreds of random STS-like maps ------------------------------
@@ -617,6 +681,97 @@ internal static class Runner
         Expect(illegal == 0, $"{illegal} random maps produced an ILLEGAL layout");
         Expect(regressed == 0, $"{regressed} random maps regressed vs baseline");
         Expect(orderLeaks == 0, $"{orderLeaks} random maps changed layout under node reordering (not a pure function of the graph)");
+    }
+
+    // ---- continuous smooth layout (Hybrid Vertical-Rail + Curvature QP) tests --------------
+    private static void SmoothLayoutTests(int seedCount)
+    {
+        Console.WriteLine($"-- continuous smooth layout tests (curated + {seedCount} random maps) --");
+
+        // Curated checks: zigzag straightens, two-boss aligns Start/Boss1/Boss2, captured maps stay legal.
+        LGraph zig = new B().E(0, 0, 1, 1).E(1, 1, 2, 0).E(2, 0, 3, 1).E(3, 1, 4, 0).G();
+        double[] zigX = MapLayout.AssignSmoothX(zig);
+        Expect(LayoutInvariants.IsLegalContinuous(zig, zigX), "smooth zigzag illegal");
+        Expect(LayoutMetrics.ThroughBendEnergy(zig, zigX) < 1e-3,
+            $"smooth zigzag did not straighten (bendEnergy={LayoutMetrics.ThroughBendEnergy(zig, zigX):F4})");
+
+        LGraph twoBoss = FromDump(UnderdocksNodes + " 17,3", UnderdocksEdges + " 16,3->17,3");
+        double[] tbX = MapLayout.AssignSmoothX(twoBoss);
+        Expect(LayoutInvariants.IsLegalContinuous(twoBoss, tbX), "smooth two-boss illegal");
+        double sX = tbX[twoBoss.RowsOrdered[0][0]];
+        double b1X = tbX[twoBoss.RowsOrdered[twoBoss.RowCount - 2][0]];
+        double b2X = tbX[twoBoss.RowsOrdered[twoBoss.RowCount - 1][0]];
+        Expect(Math.Abs(sX - b1X) < 1e-6 && Math.Abs(b1X - b2X) < 1e-6,
+            $"smooth two-boss spine misaligned ({sX:F4}, {b1X:F4}, {b2X:F4})");
+
+        foreach ((string name, LGraph g) in new[]
+        {
+            (CapName, FromDump(CapNodes, CapEdges)),
+            ("underdocks-2026-11-16", FromDump(UnderdocksNodes, UnderdocksEdges)),
+            ("two-boss-underdocks", twoBoss),
+        })
+        {
+            double[] baseX = g.BaselineLanes().Select(v => (double)v).ToArray();
+            double[] smoothX = MapLayout.AssignSmoothX(g);
+            List<string> viols = LayoutInvariants.CheckContinuous(g, smoothX);
+            foreach (string v in viols) Fail($"smooth {name}: {v}");
+            int bc = LayoutMetrics.ContinuousCrossings(g, baseX);
+            int sc = LayoutMetrics.ContinuousCrossings(g, smoothX);
+            Expect(sc <= bc, $"smooth {name}: crossings regressed ({sc} > {bc})");
+            Console.WriteLine($"  {name,-26} meanTurn {LayoutMetrics.MeanThroughTurnDeg(g, baseX):F1}°->{LayoutMetrics.MeanThroughTurnDeg(g, smoothX):F1}°  " +
+                              $"bendE {LayoutMetrics.ThroughBendEnergy(g, baseX):F1}->{LayoutMetrics.ThroughBendEnergy(g, smoothX):F1}  crossings {bc}->{sc}");
+        }
+
+        int illegal = 0, crossRegressed = 0, misaligned = 0, orderLeaks = 0;
+        double baseBendSum = 0, smoothBendSum = 0, baseTurnSum = 0, smoothTurnSum = 0;
+        for (int seed = 0; seed < seedCount; seed++)
+        {
+            LGraph g = RandomStsMapWithEnds(new Random(seed + 10_000));
+            double[] baseX = g.BaselineLanes().Select(v => (double)v).ToArray();
+            double[] smoothX = MapLayout.AssignSmoothX(g);
+
+            if (!LayoutInvariants.IsLegalContinuous(g, smoothX)) illegal++;
+            if (LayoutMetrics.ContinuousCrossings(g, smoothX) > LayoutMetrics.ContinuousCrossings(g, baseX))
+                crossRegressed++;
+
+            double sx = smoothX[g.RowsOrdered[0][0]];
+            double bx = smoothX[g.RowsOrdered[g.RowCount - 1][0]];
+            if (Math.Abs(sx - bx) > 1e-6) misaligned++;
+
+            if (!SameSmoothUnderReorder(g, new Random(seed + 888_888)))
+                orderLeaks++;
+
+            baseBendSum += LayoutMetrics.ThroughBendEnergy(g, baseX);
+            smoothBendSum += LayoutMetrics.ThroughBendEnergy(g, smoothX);
+            baseTurnSum += LayoutMetrics.MeanThroughTurnDeg(g, baseX);
+            smoothTurnSum += LayoutMetrics.MeanThroughTurnDeg(g, smoothX);
+        }
+
+        double bendDropPct = 100.0 * (baseBendSum - smoothBendSum) / Math.Max(1e-9, baseBendSum);
+        Console.WriteLine($"  illegal: {illegal}   crossRegressed: {crossRegressed}   misaligned: {misaligned}   order-leaks: {orderLeaks}");
+        Console.WriteLine($"  mean through-turn {baseTurnSum / seedCount:F1}° -> {smoothTurnSum / seedCount:F1}°   bend energy -{bendDropPct:F1}%");
+        Expect(illegal == 0, $"{illegal} random maps produced an ILLEGAL continuous layout");
+        Expect(crossRegressed == 0, $"{crossRegressed} random maps regressed crossings in continuous layout");
+        Expect(misaligned == 0, $"{misaligned} random maps misaligned Start/Boss in continuous layout");
+        Expect(orderLeaks == 0, $"{orderLeaks} random maps changed continuous layout under node reordering");
+        Expect(bendDropPct > 50.0, $"expected smooth layout to cut bend energy by >50%, got {bendDropPct:F1}%");
+    }
+
+    private static bool SameSmoothUnderReorder(LGraph g, Random rng)
+    {
+        double[] baseX = MapLayout.AssignSmoothX(g);
+        var baseByCoord = g.Nodes.ToDictionary(n => (n.Row, n.Col), n => baseX[n.Id]);
+
+        int[] perm = Enumerable.Range(0, g.Nodes.Length).ToArray();
+        for (int i = perm.Length - 1; i > 0; i--) { int j = rng.Next(i + 1); (perm[i], perm[j]) = (perm[j], perm[i]); }
+
+        var b = new B();
+        foreach (int i in perm) b.Node(g.Nodes[i].Row, g.Nodes[i].Col);
+        foreach ((int f, int t) in g.Edges) b.E(g.Nodes[f].Row, g.Nodes[f].Col, g.Nodes[t].Row, g.Nodes[t].Col);
+        LGraph gp = b.G();
+
+        double[] permX = MapLayout.AssignSmoothX(gp);
+        return gp.Nodes.All(n => baseByCoord[(n.Row, n.Col)].Equals(permX[n.Id]));
     }
 
     // Rebuild g with its nodes enumerated in a shuffled order (edges unchanged) and check that
