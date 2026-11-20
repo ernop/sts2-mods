@@ -81,7 +81,7 @@ Use:
 - **Titles:** `One-Page Map — Whole Act on One Screen` and `DeckView — Zoomed-Out Deck Views`
 - **Tags:** `UI`, `Quality of Life`
 - **Preview:** workspace-root `image.png` (must stay below the 1 MB uploader limit)
-- **Visibility:** `public` for One-Page Map (`3776618284`), `private` for DeckView (`3776619975`)
+- **Visibility:** `public` for One-Page Map (`3776618284`) and `public` for DeckView (`3776619975`)
 
 Upload with:
 

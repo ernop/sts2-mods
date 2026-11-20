@@ -1,86 +1,93 @@
-# One-Page Map & DeckView — Slay the Spire 2 UI mods
+# One-Page Map & DeckView — Slay the Spire 2 Mods
 
-This repository contains two independent UI-only mods for Slay the Spire 2 (separate DLLs,
-manifests, config files, and compatibility checks; install either or both):
+Two independent, visual-only UI mods for **Slay the Spire 2** (`v0.113.1`). Install either one or
+both — neither changes cards, routes, combat, rewards, saves, or any other gameplay, and neither
+requires any other mods.
 
-- **One-Page Map** (`flatmap`) — displays the entire act map on one screen instead of scrolling
-  vertically.
-- **DeckView** (`deckview`) — shrinks cards in deck grid screens so more cards fit on screen at
-  once; hovering a card enlarges it back to full size.
+- **One-Page Map** — See the entire act map on one screen with no scrolling.
+  [Steam Workshop](https://steamcommunity.com/sharedfiles/filedetails/?id=3776618284) · [Details](#one-page-map)
+- **DeckView** — Zoom out deck screens to see more cards at once; hover to read full size.
+  [Steam Workshop](https://steamcommunity.com/sharedfiles/filedetails/?id=3776619975) · [Details](#deckview)
 
-Neither mod changes cards, routes, travel rules, combat, rewards, saves, or any other gameplay.
+---
 
-| One-Page Map | DeckView |
-|---|---|
-| ![One-Page Map](docs/images/flat-map.png) | ![DeckView](docs/images/deck-view.png) |
+## One-Page Map
 
-> **Compatibility target: Slay the Spire 2 `v0.113.1`.**
->
-> On startup, each mod checks every game hook and every game member its compiled code references.
-> If a game update renames or changes a required member, the mod logs the mismatch, disables
-> itself, rolls back Harmony patches, and leaves the default UI running.
+**[Subscribe on Steam Workshop](https://steamcommunity.com/sharedfiles/filedetails/?id=3776618284)**
 
-## One-Page Map (`flatmap`)
+![One-Page Map](docs/images/flat-map.png)
 
-Fits all floors of the current act (start node through boss, including two-boss acts) inside the
-viewport without scrolling.
+### What it does
+- **Whole act at a glance:** Fits every floor from the start room to the boss (including two-boss
+  acts) onto one screen so you can plan your full route without scrolling.
+- **Easier-to-read icons:** Keeps the game's original room icons and adds colored outlines by room
+  type so you can tell fights, elites, shops, rests, treasures, and `?` rooms apart at smaller
+  scale.
+- **Clear route cues:** Rooms you can travel to right now pulse with a white border (including
+  relic effects like Wing Boots). Visited `?` rooms display the room type they turned out to be, and
+  hovering an entry in the legend highlights all rooms of that type.
+- **Everything from the vanilla map still works:** Legend, animated bosses, map drawing and
+  erasing, quest markers, visited-room tooltips, ink circles, current-position marker, and
+  multiplayer votes/cursors all work as normal.
 
-- **Uses the game's own map screen (`NMapScreen`).** Positions and scales the live `NMapPoint`
-  nodes in place on a flat act-colored background (`Act.MapBgColor`). Keeps the game's own icons,
-  legend, animated Spine bosses, map drawings (`NMapDrawings` + drawing tools), quest markers,
-  visited-room hover tooltips, ink circles, current-position marker, shop music, and multiplayer
-  cursors/votes.
-- **Visual cues.** Room icons keep their original interior art with colored outlines by room type.
-  Rooms you can currently travel to pulse with a white border (respects relics such as Wing Boots).
-  Visited `?` rooms show the room type they resolved into. Hovering a legend entry highlights all
-  rooms of that type.
-- **Layout and paths.** Draws dashed paths between connected rooms. When **Compress** is checked
-  (on by default), nodes are repositioned horizontally using a continuous layout solver
-  (`ContinuousMapLayout` in `layout/MapLayout.cs`) and connected with curved dashed paths without
-  altering room connectivity, swapping column order within a floor, or adding edge crossings.
-  Unchecking **Compress** uses the game's original column positions with straight dashed paths.
-- **Checkboxes (bottom-left, saved in `user://flatmap.cfg`):**
-  - **Flat map** — switch between the one-page view and the default scrolling map.
-  - **Compress** — toggle horizontal layout compression and curved paths (default: on).
-  - **Hide unreachable nodes** — fade rooms that can no longer be reached from your current spot
-    (default: off).
-- **Controls:** **M** or the top-bar map button opens/closes the map; **F** (while the map is
-  open) switches between one-page and scrolling views; **ESC**/Back closes the map. Works with
-  mouse, keyboard, and controller.
+### Options
+Three checkboxes in the bottom-left corner let you customize the view (choices are remembered
+between runs):
 
-Offline layout tests live in `layout/` (invariant checks, metrics, random/fan/two-boss/smooth map
-tests, and captured act maps). A runtime check refuses to draw any layout that violates column
-order or minimum separation.
+- **Flat map** *(on by default)* — Switches between the one-page view and the game's normal
+  scrolling map whenever you want to compare or go back.
+- **Compress** *(on by default)* — Smooths horizontal spacing and draws gentle curved paths so
+  branches are cleaner and easier to trace, without changing which rooms connect or adding path
+  crossings. Uncheck it to keep the game's original column positions with straight paths.
+- **Hide unreachable nodes** *(off by default)* — Fades out rooms and paths you can no longer reach
+  from your current position so only the routes still open to you stand out.
 
-## DeckView (`deckview`)
+### Controls
+- **M** or the top-bar map button — Open or close the map.
+- **F** *(while the map is open)* — Flip between One-Page Map and the standard scrolling map.
+- **ESC** / Back — Close the map.
+- Works with mouse, keyboard, and controller.
 
-Shrinks cards in `NCardGrid`-based screens so more cards fit on screen at once.
+---
 
-- **Screens affected:** deck view, draw/discard/exhaust piles, card library, and deck
-  card-selection screens (matched via an `NCardGrid` ownership allowlist).
-- **Screens left at normal size:** combat hand, card inspect popup, card rewards, shop,
-  choose-a-card, unlock, and card-bundle screens.
-- **Hover behavior:** hovering a shrunk card enlarges it to full size; moving away restores it to
-  shrunk size via a single pointer hover controller (controller/keyboard navigation uses the
-  default game behavior).
-- **Controls:** click the **Mini-cards** checkbox on any affected screen (hidden while peeking on
-  card-select screens) or press **T** (ignored when typing in search boxes or when modals are
-  blocking). Saved in `user://deckview.cfg`.
+## DeckView
 
-Tunables (`CardScaleFactor` 0.6, `CardPadding` 24, `ToggleDeckModeKey` T) are defined at the top
-of `deckview/DeckViewMod.cs`.
+**[Subscribe on Steam Workshop](https://steamcommunity.com/sharedfiles/filedetails/?id=3776619975)**
 
-## Requirements
+![DeckView](docs/images/deck-view.png)
 
-- Slay the Spire 2 `v0.113.1`.
-- No other mod dependencies. Uses the game's built-in mod loader.
+### What it does
+- **See more of your deck at once:** Shrinks cards in deck-browsing screens so more rows and
+  columns fit on screen without scrolling.
+- **Full-size hover preview:** Hover over any shrunk card to enlarge it back to full size so card
+  text stays easy to read.
+- **Where it applies:** Deck view, draw / discard / exhaust piles, Card Library, and deck
+  card-selection screens (such as Smith, Transform, Remove, Enchant, and pile selection).
+- **What stays normal size:** Your combat hand, card inspect popup, card rewards, shop,
+  choose-a-card screens, unlocks, and card bundles are left untouched.
+
+### Options & controls
+- **Mini-cards** checkbox *(on by default, remembered between runs)* — Shown at the bottom-left of
+  every affected screen (and in the Card Library sidebar) to toggle between shrunk and normal card
+  sizes at any time. Automatically hides when you peek at combat during card selection.
+- **T** — Hotkey to toggle mini-cards on or off while viewing an affected screen (ignored while
+  typing in search boxes).
+- Works with mouse, keyboard, and controller.
+
+---
 
 ## Install
 
-Download the archives you want from
-[GitHub Releases](https://github.com/ernop/sts2-mods/releases) (or subscribe on Steam Workshop:
-[One-Page Map](https://steamcommunity.com/sharedfiles/filedetails/?id=3776618284)), then extract
-into the game's `mods` directory:
+### Steam Workshop *(recommended)*
+1. Subscribe to [One-Page Map](https://steamcommunity.com/sharedfiles/filedetails/?id=3776618284)
+   and/or [DeckView](https://steamcommunity.com/sharedfiles/filedetails/?id=3776619975).
+2. Launch Slay the Spire 2 using **Play with Mods**.
+3. Enable the mod(s) in the **Mods** menu and restart when prompted.
+
+### Manual install
+Download the release archive(s) from
+[GitHub Releases](https://github.com/ernop/sts2-mods/releases) and extract into your game's `mods`
+folder:
 
 ```text
 Slay the Spire 2/
@@ -93,40 +100,26 @@ Slay the Spire 2/
         └── deckview.json
 ```
 
-Launch Slay the Spire 2 with Steam's **Play with Mods** option, enable the mod(s) in the **Mods**
-menu, and restart when prompted.
+### Compatibility
+Built and tested for **Slay the Spire 2 `v0.113.1`**. If a future game update changes something a
+mod relies on, that mod detects the mismatch on startup, disables itself automatically, and leaves
+the standard game UI intact until an updated build is released.
 
-## Build from source
+---
 
-Requires the .NET 9 SDK and an installed copy of Slay the Spire 2. Both projects reference the
-game-provided `sts2.dll`, `GodotSharp.dll`, and `0Harmony.dll`; none are bundled.
+## For developers
+
+Requires the .NET 9 SDK and an installed copy of Slay the Spire 2. Build and install both mods into
+the local game directory with:
 
 ```powershell
-# Builds both mods and copies them into <game>\mods\<id>\
 .\scripts\build.ps1 -Install
 ```
 
-Or build individually:
-`dotnet build flatmap/flatmap.csproj -c Release -p:Sts2Data="<path-to-data-dir>"` and
-`dotnet build deckview/deckview.csproj -c Release -p:Sts2Data="<path-to-data-dir>"`.
-
-Launch with `--nomods` to compare against the unmodified game.
-
-See [`DEVELOPMENT.md`](DEVELOPMENT.md) for decompilation, preflight checks, and release gates, and
-[`docs/requirements.md`](docs/requirements.md) for the product specification.
-
-## Notes
-
-- Targets Slay the Spire 2 `v0.113.1` (`TestedGameVersion` in source and `min_game_version` in
-  each manifest).
-- Both mods hook private game members, so every STS2 update requires rebuilding and verifying hooks
-  (`scripts/verify-hooks.sh` and the startup preflight). If a hook is missing, the affected mod
-  disables itself and leaves the default game UI active.
-- To update for a new game version: rebuild against the new `sts2.dll`, bump `TestedGameVersion`
-  and `min_game_version`, run `layouttest` and `scripts/check-metadata.py`, and test in-game.
+See [`DEVELOPMENT.md`](DEVELOPMENT.md) for toolchain, decompilation, and safety checks,
+[`docs/requirements.md`](docs/requirements.md) for the product specification, and
+[`PUBLISHING.md`](PUBLISHING.md) for release packaging.
 
 ## License
 
 MIT License ([LICENSE](LICENSE)). Slay the Spire 2 and its assets are owned by Mega Crit.
-Repository screenshots depict the game UI; release archives contain only each mod's DLL and
-manifest.

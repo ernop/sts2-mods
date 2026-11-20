@@ -1,7 +1,7 @@
 ﻿{
   "title": "DeckView — Zoomed-Out Deck Views",
   "description": "Shrinks cards in Slay the Spire 2 deck grid screens so more cards fit on screen at once. Hovering a card enlarges it back to full size.\n\nScreens affected:\n- Deck view\n- Draw, discard, and exhaust piles\n- Card library\n- Deck card-selection screens\n\nScreens left at normal size:\n- Combat hand\n- Card inspect popup\n- Card rewards, shop, choose-a-card, unlock, and card-bundle screens\n\nControls:\n- Click the \"Mini-cards\" checkbox on any affected screen, or press T, to toggle between shrunk and normal card sizes. The setting is saved between runs.\n- Works with mouse, keyboard, and controller.\n\nVisibility only: does not change cards, combat, rewards, saves, or any other gameplay.\n\n(The whole-act map view that older versions of DeckView included is now a separate mod: One-Page Map.)\n\nBuilt for Slay the Spire 2 v0.113.1.",
-  "visibility": "private",
+  "visibility": "public",
   "changeNote": "0.3.3 — Fixed Mini-cards overlapping View Upgrades on Upgrade (Smith) and Transform selection screens, placed it consistently in the bottom-left across all deck/pile/selection screens (above Draw Pile in combat selection screens and behind confirmation preview modals), stopped mouse clicks from leaving a yellow focus box, and isolated Card Library checkbox sizing from other screens.",
   "tags": ["UI", "Quality of Life"],
   "dependencies": [],

@@ -2,8 +2,8 @@
 
 Two independent, visibility-only Slay the Spire 2 mods (Godot 4, C#, Harmony):
 
-- **One-Page Map**, id `flatmap`, source `flatmap/`. Public Steam Workshop item.
-- **DeckView**, id `deckview`, source `deckview/`. Private Workshop item.
+- **One-Page Map**, id `flatmap`, source `flatmap/`. Public Steam Workshop item (`3776618284`).
+- **DeckView**, id `deckview`, source `deckview/`. Public Steam Workshop item (`3776619975`).
 
 Remote: [ernop/sts2-mods](https://github.com/ernop/sts2-mods), public.
 
@@ -44,7 +44,8 @@ preflight then turns that mod off with a `DISABLED` log line. (Before that check
 v0.113.0 changed `NHotkeyManager`'s hotkey methods and the v0.110.1 One-Page Map build left the
 map stuck open, 2026-11-12.) Then follow `PUBLISHING.md`, "Updating later".
 
-## Publishing needs Ernest's go-ahead
+## Ship first (settled workflow, 2026-11-20)
 
-The repo is public and One-Page Map has public Workshop subscribers. Ask before pushing,
-creating a GitHub Release, or uploading to the Workshop (the upload runs under his Steam account).
+Push, create GitHub Releases, and upload Steam Workshop updates directly once local build/test
+gates pass — do not pause to ask for permission first. Ernest checks things himself afterward and
+we fix anything quickly if needed.
