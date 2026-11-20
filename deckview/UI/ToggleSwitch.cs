@@ -10,12 +10,13 @@ namespace DeckView;
 internal static class GameStyle
 {
     internal static readonly Color TextColor = Colors.White;
-    internal static readonly Color TextOutlineColor = new(0f, 0f, 0f, 0.85f);
+    internal static readonly Color TextOutlineColor = new(0f, 0f, 0f, 0.72f);
     internal static Font? Font { get; private set; }
     internal static Texture2D? Ticked { get; private set; }
     internal static Texture2D? Unticked { get; private set; }
-    internal static int ToggleFontSize { get; private set; } = 28;
+    internal static int ToggleFontSize { get; private set; } = 21;
     internal static float ToggleBoxSize { get; private set; } = 38.5f;
+    internal static float ToggleBoxGap { get; private set; } = 5f;
 
     private static readonly List<ToggleSwitch> Toggles = new();
     private static bool _loaded;
@@ -35,7 +36,9 @@ internal static class GameStyle
     {
         if (_loaded) return;
         _loaded = true;
-        Font = GD.Load<Font>("res://themes/kreon_regular_shared.tres");
+        Font = GD.Load<Font>("res://themes/kreon_bold_glyph_space_one.tres")
+            ?? GD.Load<Font>("res://themes/kreon_bold_shared.tres")
+            ?? GD.Load<Font>("res://themes/kreon_regular_shared.tres");
         Ticked = GD.Load<Texture2D>("res://images/atlases/ui_atlas.sprites/checkbox_ticked.tres");
         Unticked = GD.Load<Texture2D>("res://images/atlases/ui_atlas.sprites/checkbox_unticked.tres");
         Log.Info($"[DeckView] game style: font={Font != null}, ticked={Ticked != null}, unticked={Unticked != null}");
@@ -66,6 +69,10 @@ internal static class GameStyle
 
         // 1. Measure the actual vanilla checkbox glyph first (never crush it to a fallback font cap).
         float measuredBox = 0f;
+        float glyphRightLocal = float.NaN;
+        Transform2D invHost = (host != null && GodotObject.IsInstanceValid(host) && host.IsInsideTree())
+            ? host.GetGlobalTransformWithCanvas().AffineInverse()
+            : Transform2D.Identity;
         Control? glyph = checkboxVisuals != null && GodotObject.IsInstanceValid(checkboxVisuals)
             ? (checkboxVisuals.GetNodeOrNull<Control>("Ticked")
                ?? checkboxVisuals.GetNodeOrNull<Control>("NotTicked")
@@ -77,12 +84,20 @@ internal static class GameStyle
             float relX = Mathf.Abs(gScale.X) / hostScale.X;
             float relY = Mathf.Abs(gScale.Y) / hostScale.Y;
             measuredBox = Mathf.Max(glyph.Size.X * relX, glyph.Size.Y * relY);
+            if (measuredBox > 18f)
+                glyphRightLocal = (invHost * glyph.GlobalPosition).X + glyph.Size.X * relX;
         }
 
-        // 2. Measure the live vanilla label font (supports both RichTextLabel and Label).
+        // 2. Measure the live vanilla label font, size, and box-to-label gap.
         int measuredFont = 0;
         if (label != null && GodotObject.IsInstanceValid(label) && label.IsInsideTree())
         {
+            Font? liveFont = label is RichTextLabel
+                ? label.GetThemeFont("normal_font")
+                : label.GetThemeFont("font");
+            if (liveFont != null)
+                Font = liveFont;
+
             int themed = label is RichTextLabel
                 ? label.GetThemeFontSize("normal_font_size")
                 : label.GetThemeFontSize("font_size");
@@ -90,6 +105,14 @@ internal static class GameStyle
                 themed = label.GetThemeFontSize("font_size");
             float relScaleY = Mathf.Abs(label.GetGlobalTransformWithCanvas().Scale.Y) / hostScale.Y;
             measuredFont = Mathf.RoundToInt(themed * Mathf.Clamp(relScaleY, 0.25f, 2f));
+
+            if (!float.IsNaN(glyphRightLocal))
+            {
+                float labelLeftLocal = (invHost * label.GlobalPosition).X;
+                float gap = labelLeftLocal - glyphRightLocal;
+                if (gap >= 1f && gap <= 24f)
+                    ToggleBoxGap = Mathf.Clamp(gap, 2f, 14f);
+            }
         }
 
         if (measuredBox > 18f)
@@ -120,7 +143,8 @@ internal sealed partial class ToggleSwitch : Control
     private readonly Action<bool> _onToggled;
     private int _fontSize;
     private float _box;
-    private const float Pad = 3f;
+    private float _gap;
+    internal const float Pad = 3f;
     private const float TrackW = 46f;
 
     internal ToggleSwitch(string label, bool on, Action<bool> onToggled)
@@ -145,12 +169,13 @@ internal sealed partial class ToggleSwitch : Control
     {
         _fontSize = GameStyle.ToggleFontSize;
         _box = GameStyle.ToggleBoxSize;
+        _gap = GameStyle.ToggleBoxGap;
         Font font = GameStyle.Font ?? GetThemeDefaultFont();
         float textWidth = font.GetStringSize(
             _label, HorizontalAlignment.Left, -1, _fontSize).X;
         float glyphWidth = (GameStyle.Ticked != null || GameStyle.Unticked != null) ? _box : TrackW;
         float height = Mathf.Max(_box, _fontSize + 8f) + Pad * 2f;
-        Size = new Vector2(Mathf.Ceil(Pad * 2f + glyphWidth + 10f + textWidth + 4f), Mathf.Ceil(height));
+        Size = new Vector2(Mathf.Ceil(Pad * 2f + glyphWidth + _gap + textWidth + 6f), Mathf.Ceil(height));
         CustomMinimumSize = Size;
         QueueRedraw();
     }
@@ -214,7 +239,7 @@ internal sealed partial class ToggleSwitch : Control
         if (tex != null)
         {
             DrawTextureRect(tex, new Rect2(Pad, cy - _box * 0.5f, _box, _box), false);
-            labelX = Pad + _box + 10f;
+            labelX = Pad + _box + _gap;
         }
         else
         {
@@ -230,7 +255,7 @@ internal sealed partial class ToggleSwitch : Control
 
         Font font = GameStyle.Font ?? GetThemeDefaultFont();
         var textPos = new Vector2(labelX, cy + _fontSize * 0.35f);
-        DrawStringOutline(font, textPos, _label, HorizontalAlignment.Left, -1, _fontSize, 4, GameStyle.TextOutlineColor);
+        DrawStringOutline(font, textPos, _label, HorizontalAlignment.Left, -1, _fontSize, 6, GameStyle.TextOutlineColor);
         DrawString(font, textPos, _label, HorizontalAlignment.Left, -1, _fontSize, GameStyle.TextColor);
 
         if (HasFocus())

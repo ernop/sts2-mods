@@ -121,6 +121,13 @@ internal static class FlatMapController
     internal static readonly FieldInfo AncientTweenField = Reflect.Field(typeof(NAncientMapPoint), "_tween");
     internal static readonly FieldInfo AncientElapsedField = Reflect.Field(typeof(NAncientMapPoint), "_elapsedTime");
 
+    internal static readonly FieldInfo BossUsesSpineField = Reflect.Field(typeof(NBossMapPoint), "_usesSpine");
+    internal static readonly FieldInfo BossMaterialField = Reflect.Field(typeof(NBossMapPoint), "_material");
+    internal static readonly FieldInfo BossBlackLayerColorField = Reflect.Field(typeof(NBossMapPoint), "_blackLayerColor");
+    internal static readonly FieldInfo BossMapColorField = Reflect.Field(typeof(NBossMapPoint), "_mapColor");
+    internal static readonly FieldInfo BossPlaceholderImageField = Reflect.Field(typeof(NBossMapPoint), "_placeholderImage");
+    internal static readonly FieldInfo BossPlaceholderOutlineField = Reflect.Field(typeof(NBossMapPoint), "_placeholderOutline");
+
     internal static readonly FieldInfo MarkerTweenField = Reflect.Field(typeof(NMapMarker), "_tween");
 
     private static readonly ConditionalWeakTable<NMapScreen, FlatMapScreenState> States = new();
@@ -577,10 +584,23 @@ internal static class FlatMapController
     {
         Color bgColor = runState?.Act?.MapBgColor ?? new Color(0.84f, 0.80f, 0.70f);
         bool ghost = FlatMapLayoutEngine.IsGhosted(node, state.Reachable, FlatMapConfig.HideUnreachable);
+        bool frontier = node.State == MapPointState.Travelable && screen.IsTravelEnabled;
+
+        // NAncientMapPoint's texture is a monochrome light mask tinted via SelfModulate; keeping it
+        // in the act's dark ink color preserves its linework instead of bleaching the node white.
+        if (node is NAncientMapPoint)
+        {
+            Color ink = runState?.Act?.MapTraveledColor ?? new Color(0.15f, 0.13f, 0.11f);
+            if (ghost)
+                return (new Color(ink.R, ink.G, ink.B, FlatMapLayoutEngine.GhostAlpha), bgColor, 1.0f);
+            if (frontier)
+                return (ink, Colors.White, isHovered ? 1.12f : 1.08f);
+            return (ink, bgColor, 1.04f);
+        }
+
         if (ghost)
             return (new Color(1f, 1f, 1f, FlatMapLayoutEngine.GhostAlpha), bgColor, 1.0f);
 
-        bool frontier = node.State == MapPointState.Travelable && screen.IsTravelEnabled;
         if (frontier)
             return (Colors.White, Colors.White, isHovered ? 1.24f : 1.18f);
 
@@ -628,7 +648,37 @@ internal static class FlatMapController
             {
                 outline.PivotOffset = outline.Size * 0.5f;
                 outline.Modulate = rimColor;
-                outline.Scale = Vector2.One * (node.State == MapPointState.Travelable && screen.IsTravelEnabled ? 1.08f : 1.04f);
+                outline.Scale = Vector2.One * rimScale;
+            }
+        }
+        else if (node is NBossMapPoint boss)
+        {
+            // Keep the boss icon rendered in the act's full dark ink (MapTraveledColor) rather than
+            // vanilla's faded MapUntraveledColor so the top node matches the crispness of every room
+            // icon on the flat background (restored automatically via RefreshAllPointVisuals in Classic).
+            bool ghost = FlatMapLayoutEngine.IsGhosted(boss, state.Reachable, FlatMapConfig.HideUnreachable);
+            Color bgColor = runState?.Act?.MapBgColor ?? new Color(0.65f, 0.54f, 0.40f);
+            Color bossInk = ghost
+                ? (runState?.Act?.MapUntraveledColor ?? new Color(0.50f, 0.43f, 0.34f))
+                : (runState?.Act?.MapTraveledColor ?? new Color(0.15f, 0.13f, 0.11f));
+
+            bool usesSpine = (bool)BossUsesSpineField.GetValue(boss)!;
+            if (usesSpine)
+            {
+                if (BossMaterialField.GetValue(boss) is ShaderMaterial mat && GodotObject.IsInstanceValid(mat))
+                {
+                    if (BossBlackLayerColorField.GetValue(null) is StringName blackParam)
+                        mat.SetShaderParameter(blackParam, bossInk);
+                    if (BossMapColorField.GetValue(null) is StringName mapParam)
+                        mat.SetShaderParameter(mapParam, bgColor);
+                }
+            }
+            else
+            {
+                if (BossPlaceholderImageField.GetValue(boss) is TextureRect img && GodotObject.IsInstanceValid(img))
+                    img.SelfModulate = bossInk;
+                if (BossPlaceholderOutlineField.GetValue(boss) is TextureRect ol && GodotObject.IsInstanceValid(ol))
+                    ol.SelfModulate = bgColor;
             }
         }
     }
@@ -1465,5 +1515,24 @@ internal static class NAncientMapPoint_OnSelected_Patch
             }
         }
         catch (Exception ex) { ModRuntime.Disable(nameof(NAncientMapPoint_OnSelected_Patch), ex); }
+    }
+}
+
+[HarmonyPatch(typeof(NBossMapPoint), "RefreshColorInstantly")]
+internal static class NBossMapPoint_RefreshColorInstantly_Patch
+{
+    private static void Postfix(NBossMapPoint __instance)
+    {
+        if (!ModRuntime.Enabled) return;
+        try
+        {
+            if (FlatMapController.TryFindScreen(__instance, out NMapScreen screen, out FlatMapScreenState state)
+                && state.IsFlatApplied)
+            {
+                var runState = FlatMapController.PointRunStateField.GetValue(__instance) as RunState;
+                FlatMapController.ApplyNodeFlatVisualInstant(__instance, screen, state, runState);
+            }
+        }
+        catch (Exception ex) { ModRuntime.Disable(nameof(NBossMapPoint_RefreshColorInstantly_Patch), ex); }
     }
 }

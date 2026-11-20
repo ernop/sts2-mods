@@ -34,11 +34,14 @@ Cross-cutting policies in "Invariants" below are mandatory.
   atomically from resting `SmallScale` slots (instant 0s hover/unhover, zero flicker, zero stuck-big
   cards, zero idle work on hidden grids). Controller/keyboard navigation runs 100% vanilla.
 - **[done]** Visible **"Mini-cards" toggle** on **every shrunk screen family** — deck/simple view
-  (above *View upgrades*), draw/discard/exhaust piles (above Back), card library (in filter
-  cluster), and deck card-select screens (above Peek and hidden when peeking) — **on by default**,
-  responsive on resize, exact vanilla checkbox & label size (measured live from vanilla's
-  `View Upgrades` tickbox glyph and `RichTextLabel`/`Label` font size in host-local coordinates,
-  ~38.5 px box / 28 px font matching vanilla pixel-for-pixel), hotkey **T**
+  (tightly paired in the bottom-left gutter right above vanilla *View Upgrades*, leaving vanilla's
+  node untouched — settled 2026-11-20: left gutter is the only cross-screen collision-free corner
+  that never overlaps 4+ row decks or `Confirm`/`CombatPiles`), draw/discard/exhaust piles (above
+  Back), card library (in filter cluster), and deck card-select screens (above Peek and hidden when
+  peeking) — **on by default**, responsive on resize, exact vanilla checkbox, bold label font
+  (`kreon_bold_glyph_space_one`), and box-to-label gap (measured live from vanilla's `View Upgrades`
+  tickbox glyph and label in host-local coordinates: ~38.4 px box, ~20–21 px scaled bold font,
+  ~5 px box-to-label gap, painted box left edges aligned pixel-for-pixel), hotkey **T**
   (guarded against text-input focus such as Card Library search, modifiers, transitions, and
   modals). Rebuilds live even when a grid has `CanScroll == false`. Persisted in `user://deckview.cfg`.
 
@@ -92,6 +95,12 @@ Cross-cutting policies in "Invariants" below are mandatory.
   `ImageHelper.GetRoomIconPath(Boss, Boss, EncounterModel.Id)` — the map's animated Spine boss has
   no static png, so this is the right source. Second-boss floors use `SecondBossEncounter`;
   fallbacks: `BossNodePath + ".png"` placeholder art, then glyph.
+- **[done]** **Start & Boss ink coloration (2026-11-20):** `NAncientMapPoint` (monochrome light mask)
+  and `NBossMapPoint` (Spine `black_layer_color` / placeholder image) both render in the act's rich
+  dark ink (`Act.MapTraveledColor`) over a clean `Act.MapBgColor` halo in Flat mode — preventing
+  `NAncientMapPoint` from being bleached white by `Colors.White` modulation and preventing
+  `NBossMapPoint` from looking washed-out in `Act.MapUntraveledColor` before floor 15 (both restore
+  automatically via `RefreshAllPointVisuals()` in Classic mode).
 - **[done*]** The **proper start icon** (`Act.Ancient.MapIcon` via the live node), sized up (×1.3).
 - **[done]** Colors: monster **red**, elite **purple**, shop **yellow**, camp/rest **green**,
   treasure **orange**, unknown **grey**, start **teal**, boss **red**.

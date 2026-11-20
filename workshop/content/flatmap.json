@@ -3,7 +3,7 @@
   "name": "One-Page Map",
   "author": "ernes",
   "description": "Displays the entire Slay the Spire 2 act map on one screen instead of scrolling vertically, with room-type outlines, optional horizontal layout compression with curved paths, and an optional toggle to fade unreachable rooms. Keeps the game's own icons, legend, map drawings, quest markers, visited-room tooltips, and controls (M to toggle map, F to switch between one-page and scrolling views). Does not change cards, routes, travel rules, combat, rewards, saves, or any other gameplay. Targets Slay the Spire 2 v0.113.1.",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "has_pck": false,
   "has_dll": true,
   "dependencies": [],

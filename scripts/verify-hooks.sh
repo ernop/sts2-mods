@@ -142,6 +142,13 @@ MegaCrit.Sts2.Core.Nodes.Screens.Map.NAncientMapPoint|_icon
 MegaCrit.Sts2.Core.Nodes.Screens.Map.NAncientMapPoint|_outline
 MegaCrit.Sts2.Core.Nodes.Screens.Map.NAncientMapPoint|_tween
 MegaCrit.Sts2.Core.Nodes.Screens.Map.NAncientMapPoint|_elapsedTime
+MegaCrit.Sts2.Core.Nodes.Screens.Map.NBossMapPoint|RefreshColorInstantly
+MegaCrit.Sts2.Core.Nodes.Screens.Map.NBossMapPoint|_usesSpine
+MegaCrit.Sts2.Core.Nodes.Screens.Map.NBossMapPoint|_material
+MegaCrit.Sts2.Core.Nodes.Screens.Map.NBossMapPoint|_blackLayerColor
+MegaCrit.Sts2.Core.Nodes.Screens.Map.NBossMapPoint|_mapColor
+MegaCrit.Sts2.Core.Nodes.Screens.Map.NBossMapPoint|_placeholderImage
+MegaCrit.Sts2.Core.Nodes.Screens.Map.NBossMapPoint|_placeholderOutline
 MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapMarker|SetMapPoint
 MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapMarker|_tween
 MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapShareButton|OnRelease

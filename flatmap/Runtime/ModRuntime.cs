@@ -203,6 +203,14 @@ internal static class HookCatalog
         Field(typeof(NAncientMapPoint), "_tween", missing);
         Field(typeof(NAncientMapPoint), "_elapsedTime", missing);
 
+        Method(typeof(NBossMapPoint), "RefreshColorInstantly", missing);
+        Field(typeof(NBossMapPoint), "_usesSpine", missing);
+        Field(typeof(NBossMapPoint), "_material", missing);
+        Field(typeof(NBossMapPoint), "_blackLayerColor", missing);
+        Field(typeof(NBossMapPoint), "_mapColor", missing);
+        Field(typeof(NBossMapPoint), "_placeholderImage", missing);
+        Field(typeof(NBossMapPoint), "_placeholderOutline", missing);
+
         Method(typeof(NMapMarker), "SetMapPoint", missing);
         Field(typeof(NMapMarker), "_tween", missing);
 

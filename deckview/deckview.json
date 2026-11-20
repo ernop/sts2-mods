@@ -3,7 +3,7 @@
   "name": "DeckView",
   "author": "ernes",
   "description": "Shrinks cards in Slay the Spire 2 deck grid screens (deck view, draw/discard/exhaust piles, card library, and deck card-selection screens) so more cards fit on screen at once. Hovering a card enlarges it back to full size. Leaves the combat hand, inspect popup, shop, and reward screens at normal size. Toggle with the Mini-cards checkbox or T. Does not change cards, combat, rewards, saves, or any other gameplay. Targets Slay the Spire 2 v0.113.1.",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "has_pck": false,
   "has_dll": true,
   "dependencies": [],

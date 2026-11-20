@@ -320,6 +320,7 @@ internal static class MiniCardsToggleRegistry
     private const string AddedMeta = "minicards_toggle";
     private const float EdgeMargin = 24f;
     private const float StackGap = 10f;
+    private const float SiblingStackGap = 4f;
 
     private static readonly List<ToggleSwitch> _toggles = new();
     private static readonly List<(Control Control, NodePath PreviousTop)> _focusRestores = new();
@@ -353,20 +354,40 @@ internal static class MiniCardsToggleRegistry
             t.SetOn(on);
     }
 
-    internal static void AnchorAboveControl(Control host, ToggleSwitch toggle, Control? anchor, bool wireFocus)
+    internal static void AnchorAboveControl(
+        Control host, ToggleSwitch toggle, Control? anchor, bool wireFocus,
+        Control? siblingVisuals = null, Control? siblingLabel = null)
     {
         host.AddChild(toggle);
         void Reposition()
         {
             if (!GodotObject.IsInstanceValid(host) || !GodotObject.IsInstanceValid(toggle) || !host.IsInsideTree())
                 return;
+            if (siblingVisuals != null || siblingLabel != null)
+                GameStyle.ConfigureToggleMetrics(host, siblingVisuals, siblingLabel);
+
             if (anchor != null && GodotObject.IsInstanceValid(anchor) && anchor.IsVisibleInTree())
             {
-                Vector2 anchorLocal = host.GetGlobalTransformWithCanvas().AffineInverse() * anchor.GlobalPosition;
+                Transform2D invHost = host.GetGlobalTransformWithCanvas().AffineInverse();
+                Vector2 anchorLocal = invHost * anchor.GlobalPosition;
                 float maxX = Mathf.Max(EdgeMargin, host.Size.X - toggle.Size.X - EdgeMargin);
                 float maxY = Mathf.Max(EdgeMargin, host.Size.Y - toggle.Size.Y - EdgeMargin);
-                float x = Mathf.Clamp(anchorLocal.X, EdgeMargin, maxX);
-                float y = Mathf.Clamp(anchorLocal.Y - toggle.Size.Y - StackGap, EdgeMargin, maxY);
+
+                // When paired directly above a vanilla tickbox, align painted checkbox left edges
+                // and use tight sibling vertical spacing.
+                Control? glyph = siblingVisuals != null && GodotObject.IsInstanceValid(siblingVisuals)
+                    ? (siblingVisuals.GetNodeOrNull<Control>("Ticked")
+                       ?? siblingVisuals.GetNodeOrNull<Control>("NotTicked")
+                       ?? siblingVisuals)
+                    : null;
+                float desiredX = (glyph != null && GodotObject.IsInstanceValid(glyph) && glyph.IsInsideTree())
+                    ? (invHost * glyph.GlobalPosition).X - ToggleSwitch.Pad
+                    : anchorLocal.X;
+                float gap = siblingVisuals != null ? SiblingStackGap : StackGap;
+
+                float minX = siblingVisuals != null ? 8f : EdgeMargin;
+                float x = Mathf.Clamp(desiredX, minX, maxX);
+                float y = Mathf.Clamp(anchorLocal.Y - toggle.Size.Y - gap, EdgeMargin, maxY);
                 toggle.Position = new Vector2(x, y);
             }
             else
@@ -454,9 +475,11 @@ internal static class NCardsViewScreen_Toggle_Patch
             GameStyle.ConfigureToggleMetrics(__instance, visuals, label);
 
             ToggleSwitch toggle = MiniCardsToggleRegistry.CreateToggle();
-            MiniCardsToggleRegistry.AnchorAboveControl(__instance, toggle, upgrades, wireFocus: true);
+            MiniCardsToggleRegistry.AnchorAboveControl(
+                __instance, toggle, upgrades, wireFocus: true,
+                siblingVisuals: visuals, siblingLabel: label);
             Log.Info($"[DeckView] mini-cards toggle on {__instance.GetType().Name} " +
-                     $"font={GameStyle.ToggleFontSize}px box={GameStyle.ToggleBoxSize:0.#}px");
+                     $"font={GameStyle.ToggleFontSize}px box={GameStyle.ToggleBoxSize:0.#}px gap={GameStyle.ToggleBoxGap:0.#}px");
         }
         catch (Exception ex)
         {
