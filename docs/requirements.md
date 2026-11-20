@@ -258,8 +258,10 @@ Cross-cutting policies in "Invariants" below are mandatory.
     through-paths (eliminates sawtooth zigzags and centers forks/merges), `UnlinkedGap = 1.15` subtle
     visual separation between adjacent rooms that share neither parent nor child, and gentle compactness.
   - **Rendering (`FlatMapLayoutEngine` + `FlatPathsLayer`):** `laneSpacing <= rowStep * 1.82f` calm
-    aspect-ratio cap across 16:9 and 21:9 displays, paired with rim-fanned cubic-Hermite Bézier
-    S-curve dashed paths (arc-length parameterized for uniform dashes; straight vertical dashes when
+    aspect-ratio cap across 16:9 and 21:9 displays, paired with shoulder-exiting, chord-relative
+    cubic Bézier S-curve dashed paths (arc-length parameterized for uniform dashes; rim exits up to
+    56°/52° with bounded 10°/14° tangent bend off the rim-to-rim chord and monotonic Y clamping so
+    wide diagonals never flatten into horizontal shelves; straight vertical dashes when
     `|dx| < 2px`). Cuts mean through-turn angle from 50.5° → 29.5° (-70.7% bend energy) with 0
     illegal, 0 crossing regressions, 0 spine misalignments, and 0 order leaks across 300 random maps
     and captured real acts.

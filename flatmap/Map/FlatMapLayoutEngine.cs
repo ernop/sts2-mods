@@ -467,18 +467,31 @@ internal static class FlatMapLayoutEngine
                     MapPointType toType = toNode.Point?.PointType ?? MapPointType.Monster;
                     bool isFan = fromType == MapPointType.Ancient || toType == MapPointType.Boss;
                     float rawAng = MathF.Atan2(delta.X, -delta.Y);
-                    float maxAng = (isFan ? 42f : 26f) * (MathF.PI / 180f);
-                    float ang = Mathf.Clamp(rawAng * (isFan ? 0.65f : 0.45f), -maxAng, maxAng);
+                    // Exit near the node-to-node shoulder direction so wide diagonals keep vertical
+                    // breathing room and multi-edge junctions separate cleanly around each icon rim.
+                    float maxAng = (isFan ? 52f : 56f) * (MathF.PI / 180f);
+                    float ang = Mathf.Clamp(rawAng * (isFan ? 0.78f : 0.86f), -maxAng, maxAng);
 
                     Vector2 start = new(a.X + MathF.Sin(ang) * trimA, a.Y - MathF.Cos(ang) * trimA);
                     Vector2 end = new(b.X - MathF.Sin(ang) * trimB, b.Y + MathF.Cos(ang) * trimB);
+                    float spanX = end.X - start.X;
                     float spanY = start.Y - end.Y;
-                    if (spanY >= 4f)
+                    float chordLen = MathF.Sqrt(spanX * spanX + spanY * spanY);
+                    if (spanY >= 4f && chordLen >= 4f)
                     {
-                        float tanAng = ang * 0.35f;
-                        float ctrlLen = spanY * 0.46f;
-                        Vector2 c1 = new(start.X + MathF.Sin(tanAng) * ctrlLen, start.Y - MathF.Cos(tanAng) * ctrlLen);
-                        Vector2 c2 = new(end.X - MathF.Sin(tanAng) * ctrlLen, end.Y + MathF.Cos(tanAng) * ctrlLen);
+                        // Subtle chord-relative S-curve: keep tangents within a small bounded bend of
+                        // the rim-to-rim chord instead of forcing near-vertical tangents, so wide
+                        // diagonals glide smoothly without flattening into horizontal shelves.
+                        float chordAng = MathF.Atan2(spanX, spanY);
+                        float maxBend = (isFan ? 14f : 10f) * (MathF.PI / 180f);
+                        float bend = Mathf.Clamp(chordAng * (isFan ? 0.28f : 0.22f), -maxBend, maxBend);
+                        float tanAng = chordAng - bend;
+                        float cosTan = MathF.Cos(tanAng);
+                        float ctrlLen = chordLen * 0.30f;
+                        if (cosTan > 0.05f)
+                            ctrlLen = Math.Min(ctrlLen, (spanY * 0.42f) / cosTan);
+                        Vector2 c1 = new(start.X + MathF.Sin(tanAng) * ctrlLen, start.Y - cosTan * ctrlLen);
+                        Vector2 c2 = new(end.X - MathF.Sin(tanAng) * ctrlLen, end.Y + cosTan * ctrlLen);
                         edges.Add(new EdgeVisual(start, c1, c2, end, state));
                         continue;
                     }
