@@ -383,9 +383,9 @@ internal static class FlatMapController
         if (state.Chrome != null && GodotObject.IsInstanceValid(state.Chrome))
             leftClearance = Math.Max(leftClearance, state.Chrome.LeftTogglesRightEdge + 16f);
 
-        float topClearance = 110f;
+        float topClearance = 96f;
         if (NRun.Instance?.GlobalUi?.TopBar is Control topBar && GodotObject.IsInstanceValid(topBar))
-            topClearance = Math.Max(topClearance, topBar.Size.Y + 42f);
+            topClearance = Math.Max(topClearance, topBar.Size.Y + 30f);
 
         // Vanilla Drawings origin inside TheMap (exact RepositionBasedOnBackground formula).
         NMapDrawings drawings = screen.Drawings;

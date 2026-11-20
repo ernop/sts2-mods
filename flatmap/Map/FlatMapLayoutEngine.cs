@@ -199,9 +199,9 @@ internal static class FlatMapLayoutEngine
         }
         float activeMidLane = (activeMinLane + activeMaxLane) * 0.5f;
 
-        // Weighted vertical row spacing: Start gap 1.25x, boss-converge gap 1.50x,
+        // Weighted vertical row spacing: Start gap 1.25x, boss-converge gap 1.62x,
         // Boss1->Boss2 gap 1.45x (when Double Boss is active), normal floor gaps 1.00x.
-        float topY = Mathf.Clamp(topClearance, 72f, screenSize.Y * 0.16f);
+        float topY = Mathf.Clamp(topClearance, 64f, screenSize.Y * 0.16f);
         float botY = Math.Max(topY + 120f, screenSize.Y - 46f);
         float usableH = botY - topY;
 
@@ -212,7 +212,7 @@ internal static class FlatMapLayoutEngine
         {
             float w = 1.0f;
             if (r == 0) w = 1.25f;
-            else if (r + 1 == bossRowIdx) w = 1.50f;
+            else if (r + 1 == bossRowIdx) w = 1.62f;
             else if (hasSecondBoss && r == bossRowIdx) w = 1.45f;
             gapWeights[r] = w;
             totalWeight += w;
@@ -237,10 +237,10 @@ internal static class FlatMapLayoutEngine
 
         // Anchor lane spacing to rawSpan (never activeSpan) so Compress narrows the silhouette
         // inward toward the center instead of stretching compressed columns wider. Cap the
-        // horizontal/vertical aspect ratio at 1.55x rowStep so 16:9 and 21:9 screens never
-        // flatten paths into harsh horizontal slashes.
-        float maxGridWidth = Math.Min(bandWidth - 64f, screenSize.X * 0.52f);
-        float laneSpacing = Math.Min(maxGridWidth / rawSpan, rowStep * 1.55f);
+        // horizontal/vertical aspect ratio at 1.82x rowStep so the map breathes comfortably while
+        // keeping diagonal slopes calm on both 16:9 and 21:9 screens.
+        float maxGridWidth = Math.Min(bandWidth - 64f, screenSize.X * 0.56f);
+        float laneSpacing = Math.Min(maxGridWidth / rawSpan, rowStep * 1.82f);
 
         // Visual base radius constrained by both vertical row spacing and horizontal lane spacing.
         float baseR = Mathf.Clamp(Math.Min(rowStep * 0.43f, laneSpacing * 0.34f), 12f, 22f);

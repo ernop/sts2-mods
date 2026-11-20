@@ -14,8 +14,8 @@ internal static class GameStyle
     internal static Font? Font { get; private set; }
     internal static Texture2D? Ticked { get; private set; }
     internal static Texture2D? Unticked { get; private set; }
-    internal static int ToggleFontSize { get; private set; } = 20;
-    internal static float ToggleBoxSize { get; private set; } = 26f;
+    internal static int ToggleFontSize { get; private set; } = 28;
+    internal static float ToggleBoxSize { get; private set; } = 38.5f;
 
     private static readonly List<ToggleSwitch> Toggles = new();
     private static bool _loaded;
@@ -50,38 +50,58 @@ internal static class GameStyle
     internal static void Unregister(ToggleSwitch toggle) => Toggles.Remove(toggle);
 
     /// <summary>
-    /// Measure the live vanilla "View upgrades" control. All DeckView toggles then use the same
-    /// effective font size and a proportional checkbox size (matching vanilla's ~24-28px box
-    /// rather than %TickboxVisuals' outer container rect).
+    /// Measure the live vanilla "View upgrades" control in host-local coordinates so DeckView's
+    /// checkbox and label match vanilla STS2 tickboxes pixel-for-pixel.
     /// </summary>
-    internal static void ConfigureToggleMetrics(Control? checkboxVisuals, Control? label)
+    internal static void ConfigureToggleMetrics(Control? host, Control? checkboxVisuals, Control? label)
     {
         EnsureLoaded();
 
-        if (label != null && GodotObject.IsInstanceValid(label) && label.IsInsideTree())
+        Vector2 hostScale = Vector2.One;
+        if (host != null && GodotObject.IsInstanceValid(host) && host.IsInsideTree())
         {
-            int themed = label.GetThemeFontSize("font_size");
-            float scale = Mathf.Abs(label.GetGlobalTransformWithCanvas().Scale.Y);
-            int effective = Mathf.RoundToInt(themed * Mathf.Clamp(scale, 0.2f, 2f));
-            if (effective > 0)
-                ToggleFontSize = Mathf.Clamp(effective, 16, 26);
+            Vector2 s = host.GetGlobalTransformWithCanvas().Scale;
+            hostScale = new Vector2(Mathf.Max(0.01f, Mathf.Abs(s.X)), Mathf.Max(0.01f, Mathf.Abs(s.Y)));
         }
 
-        float targetBox = ToggleFontSize * 1.3f;
+        // 1. Measure the actual vanilla checkbox glyph first (never crush it to a fallback font cap).
+        float measuredBox = 0f;
         Control? glyph = checkboxVisuals != null && GodotObject.IsInstanceValid(checkboxVisuals)
-            ? (checkboxVisuals.GetNodeOrNull<Control>("Ticked") ?? checkboxVisuals)
+            ? (checkboxVisuals.GetNodeOrNull<Control>("Ticked")
+               ?? checkboxVisuals.GetNodeOrNull<Control>("NotTicked")
+               ?? checkboxVisuals)
             : null;
         if (glyph != null && GodotObject.IsInstanceValid(glyph) && glyph.IsInsideTree())
         {
-            Vector2 scale = glyph.GetGlobalTransformWithCanvas().Scale;
-            float measured = Mathf.Max(
-                glyph.Size.X * Mathf.Abs(scale.X),
-                glyph.Size.Y * Mathf.Abs(scale.Y));
-            if (measured > 0f)
-                targetBox = measured;
+            Vector2 gScale = glyph.GetGlobalTransformWithCanvas().Scale;
+            float relX = Mathf.Abs(gScale.X) / hostScale.X;
+            float relY = Mathf.Abs(gScale.Y) / hostScale.Y;
+            measuredBox = Mathf.Max(glyph.Size.X * relX, glyph.Size.Y * relY);
         }
-        // Keep the box proportional to the label font so outer tickbox padding never bloats it.
-        ToggleBoxSize = Mathf.Clamp(targetBox, ToggleFontSize * 1.15f, ToggleFontSize * 1.45f);
+
+        // 2. Measure the live vanilla label font (supports both RichTextLabel and Label).
+        int measuredFont = 0;
+        if (label != null && GodotObject.IsInstanceValid(label) && label.IsInsideTree())
+        {
+            int themed = label is RichTextLabel
+                ? label.GetThemeFontSize("normal_font_size")
+                : label.GetThemeFontSize("font_size");
+            if (themed <= 0)
+                themed = label.GetThemeFontSize("font_size");
+            float relScaleY = Mathf.Abs(label.GetGlobalTransformWithCanvas().Scale.Y) / hostScale.Y;
+            measuredFont = Mathf.RoundToInt(themed * Mathf.Clamp(relScaleY, 0.25f, 2f));
+        }
+
+        if (measuredBox > 18f)
+            ToggleBoxSize = Mathf.Clamp(measuredBox, 24f, 52f);
+
+        if (measuredFont > 16)
+            ToggleFontSize = Mathf.Clamp(measuredFont, 18, 36);
+        else if (measuredBox > 18f)
+            ToggleFontSize = Mathf.Clamp(Mathf.RoundToInt(ToggleBoxSize * 0.72f), 18, 36);
+
+        if (measuredBox <= 18f)
+            ToggleBoxSize = Mathf.Clamp(ToggleFontSize * 1.375f, 24f, 52f);
 
         Toggles.RemoveAll(t => !GodotObject.IsInstanceValid(t));
         foreach (ToggleSwitch toggle in Toggles)
@@ -130,7 +150,7 @@ internal sealed partial class ToggleSwitch : Control
             _label, HorizontalAlignment.Left, -1, _fontSize).X;
         float glyphWidth = (GameStyle.Ticked != null || GameStyle.Unticked != null) ? _box : TrackW;
         float height = Mathf.Max(_box, _fontSize + 8f) + Pad * 2f;
-        Size = new Vector2(Mathf.Ceil(Pad * 2f + glyphWidth + 8f + textWidth + 4f), Mathf.Ceil(height));
+        Size = new Vector2(Mathf.Ceil(Pad * 2f + glyphWidth + 10f + textWidth + 4f), Mathf.Ceil(height));
         CustomMinimumSize = Size;
         QueueRedraw();
     }
@@ -194,7 +214,7 @@ internal sealed partial class ToggleSwitch : Control
         if (tex != null)
         {
             DrawTextureRect(tex, new Rect2(Pad, cy - _box * 0.5f, _box, _box), false);
-            labelX = Pad + _box + 8f;
+            labelX = Pad + _box + 10f;
         }
         else
         {

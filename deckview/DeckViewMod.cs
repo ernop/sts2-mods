@@ -450,8 +450,8 @@ internal static class NCardsViewScreen_Toggle_Patch
 
             var upgrades = ShowUpgradesField.GetValue(__instance) as Control;
             Control? label = __instance.GetNodeOrNull("%ViewUpgradesLabel") as Control;
-            Control? visuals = __instance.GetNodeOrNull("%TickboxVisuals") as Control;
-            GameStyle.ConfigureToggleMetrics(visuals, label);
+            Control? visuals = (upgrades?.GetNodeOrNull("%TickboxVisuals") ?? __instance.GetNodeOrNull("%TickboxVisuals")) as Control;
+            GameStyle.ConfigureToggleMetrics(__instance, visuals, label);
 
             ToggleSwitch toggle = MiniCardsToggleRegistry.CreateToggle();
             MiniCardsToggleRegistry.AnchorAboveControl(__instance, toggle, upgrades, wireFocus: true);
@@ -507,7 +507,7 @@ internal static class NCardLibrary_Toggle_Patch
             Control? visuals = upgrades?.GetNodeOrNull("%TickboxVisuals") as Control;
             Control? label = upgrades?.GetNodeOrNull<Control>("%Label");
             if (visuals != null || label != null)
-                GameStyle.ConfigureToggleMetrics(visuals, label);
+                GameStyle.ConfigureToggleMetrics(__instance, visuals, label);
 
             ToggleSwitch toggle = MiniCardsToggleRegistry.CreateToggle();
             MiniCardsToggleRegistry.AttachInLibrary(__instance, toggle, multiplayer ?? upgrades);

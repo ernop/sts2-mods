@@ -12,8 +12,8 @@ internal static class GameStyle
     internal static Font? Font { get; private set; }
     internal static Texture2D? Ticked { get; private set; }
     internal static Texture2D? Unticked { get; private set; }
-    internal static int ToggleFontSize { get; private set; } = 20;
-    internal static float ToggleBoxSize { get; private set; } = 26f;
+    internal static int ToggleFontSize { get; private set; } = 28;
+    internal static float ToggleBoxSize { get; private set; } = 38.5f;
 
     private static readonly List<ToggleSwitch> Toggles = new();
     private static bool _loaded;
@@ -96,7 +96,7 @@ internal sealed partial class ToggleSwitch : Control
         float textWidth = font.GetStringSize(_label, HorizontalAlignment.Left, -1, _fontSize).X;
         float glyphWidth = (GameStyle.Ticked != null || GameStyle.Unticked != null) ? _box : TrackW;
         float height = Mathf.Max(_box, _fontSize + 8f) + Pad * 2f;
-        Size = new Vector2(Mathf.Ceil(Pad * 2f + glyphWidth + 8f + textWidth + 4f), Mathf.Ceil(height));
+        Size = new Vector2(Mathf.Ceil(Pad * 2f + glyphWidth + 10f + textWidth + 4f), Mathf.Ceil(height));
         CustomMinimumSize = Size;
         QueueRedraw();
     }
@@ -160,7 +160,7 @@ internal sealed partial class ToggleSwitch : Control
         if (tex != null)
         {
             DrawTextureRect(tex, new Rect2(Pad, cy - _box * 0.5f, _box, _box), false);
-            labelX = Pad + _box + 8f;
+            labelX = Pad + _box + 10f;
         }
         else
         {

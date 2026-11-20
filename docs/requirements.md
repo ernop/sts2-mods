@@ -36,7 +36,9 @@ Cross-cutting policies in "Invariants" below are mandatory.
 - **[done]** Visible **"Mini-cards" toggle** on **every shrunk screen family** — deck/simple view
   (above *View upgrades*), draw/discard/exhaust piles (above Back), card library (in filter
   cluster), and deck card-select screens (above Peek and hidden when peeking) — **on by default**,
-  responsive on resize, proportional checkbox size (~24–28 px matching vanilla), hotkey **T**
+  responsive on resize, exact vanilla checkbox & label size (measured live from vanilla's
+  `View Upgrades` tickbox glyph and `RichTextLabel`/`Label` font size in host-local coordinates,
+  ~38.5 px box / 28 px font matching vanilla pixel-for-pixel), hotkey **T**
   (guarded against text-input focus such as Card Library search, modifiers, transitions, and
   modals). Rebuilds live even when a grid has `CanScroll == false`. Persisted in `user://deckview.cfg`.
 
@@ -54,8 +56,10 @@ Cross-cutting policies in "Invariants" below are mandatory.
 - **[done]** Layout is **VERTICAL — the vanilla map's own orientation** (floors run bottom→top,
   start at the bottom, boss / second boss at the top). Every live `NMapPoint` is placed & scaled
   in place into a single viewport-responsive screen (no scrolling, no 3s start-of-act scroll tween,
-  act banner & first-run FTUE preserved), with weighted row spacing, a calm widescreen aspect-ratio
-  cap (`laneSpacing <= rowStep * 1.55f`), and `Compress` (**on by default**, 2026-11-19):
+  act banner & first-run FTUE preserved), with weighted row spacing (Start 1.25×, Boss-converge
+  1.62×, top clearance `topBar.Size.Y + 30f`), a balanced widescreen aspect-ratio cap
+  (`laneSpacing <= rowStep * 1.82f`), vanilla-matched checkbox sizing (38.5 px box / 28 px font),
+  and `Compress` (**on by default**, 2026-11-19):
   - **Compress ON (default):** smooth continuous vertical-rail & curvature QP layout
     (`MapLayout.AssignSmoothX`) with rim-fanned smooth cubic Bézier dashed footpaths (dead-straight
     vertical dashes when `|dx| < 2px`, smooth S-curves on forks/merges/fans; supports single-boss
@@ -253,7 +257,7 @@ Cross-cutting policies in "Invariants" below are mandatory.
     Euler–Bernoulli second-derivative curvature penalty `(x_{r+1} - 2x_r + x_{r-1})^2` across 3-floor
     through-paths (eliminates sawtooth zigzags and centers forks/merges), `UnlinkedGap = 1.15` subtle
     visual separation between adjacent rooms that share neither parent nor child, and gentle compactness.
-  - **Rendering (`FlatMapLayoutEngine` + `FlatPathsLayer`):** `laneSpacing <= rowStep * 1.55f` calm
+  - **Rendering (`FlatMapLayoutEngine` + `FlatPathsLayer`):** `laneSpacing <= rowStep * 1.82f` calm
     aspect-ratio cap across 16:9 and 21:9 displays, paired with rim-fanned cubic-Hermite Bézier
     S-curve dashed paths (arc-length parameterized for uniform dashes; straight vertical dashes when
     `|dx| < 2px`). Cuts mean through-turn angle from 50.5° → 29.5° (-70.7% bend energy) with 0

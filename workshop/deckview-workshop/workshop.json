@@ -2,7 +2,7 @@
   "title": "DeckView — Zoomed-out Deck Views",
   "description": "Zooms out deck-like views so the whole deck is visible at a glance. Mini-cards shrink the deck view, draw/discard/exhaust piles, card library, and deck card-select screens; hovering a card pops it back to full size.\n\nLeft at normal size: the combat hand, the inspect popup, and the choose-a-card, card-reward, unlock, shop, and card-bundle screens.\n\nVisibility only: DeckView does not change cards, routes, travel rules, combat, rewards, saves, or any other gameplay.\n\nToggle any time with the on-screen Mini-cards tickbox or press T; the choice persists across runs. Mouse, keyboard, and controller supported.\n\n(The whole-act map view that older DeckView builds bundled is now the separate One-Page Map mod.)\n\nTargets STS2 v0.113.1.",
   "visibility": "private",
-  "changeNote": "0.3.0 — Built for STS2 v0.113.1. Strict NCardGrid ownership allowlist, unified single-owner pointer hover (instant hover/unhover with zero flicker or stuck-big cards), Mini-cards toggle on all shrunk screens (including draw/discard/exhaust piles and card select, hidden while peeking), and clean overlay layering.",
+  "changeNote": "0.3.1 — Mini-cards checkbox and label now match vanilla STS2's View Upgrades checkbox size pixel-for-pixel (reads RichTextLabel normal_font_size and live Tickbox glyph dimensions in host-local coordinates).",
   "tags": ["UI", "Quality of Life"],
   "dependencies": [],
   "contentDescriptors": []

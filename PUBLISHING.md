@@ -1,6 +1,6 @@
 # Publishing FlatMap & DeckView
 
-FlatMap `0.6.0` and DeckView `0.3.0` target Slay the Spire 2 `v0.113.1`. Only publish DLLs
+FlatMap `0.6.1` and DeckView `0.3.1` target Slay the Spire 2 `v0.113.1`. Only publish DLLs
 built against and tested with that game version. (The pre-0.2.0 combined mod shipped as id
 `deckview`; since 0.2.0 the map lives in `flatmap` and `deckview` is the deck zoom only.)
 
@@ -38,10 +38,10 @@ After the checks above:
 .\scripts\package.ps1
 ```
 
-This creates `dist/flatmap-0.6.0-sts2-0.113.1.zip` and `dist/deckview-0.3.0-sts2-0.113.1.zip`
+This creates `dist/flatmap-0.6.1-sts2-0.113.1.zip` and `dist/deckview-0.3.1-sts2-0.113.1.zip`
 with SHA-256 files. Each archive contains `<id>/<id>.dll` + `<id>/<id>.json`.
 
-Upload the files to a GitHub Release named `FlatMap 0.6.0 & DeckView 0.3.0 for STS2 v0.113.1`.
+Upload the files to a GitHub Release named `FlatMap 0.6.1 & DeckView 0.3.1 for STS2 v0.113.1`.
 Never bundle `sts2.dll`, `GodotSharp.dll`, or `0Harmony.dll`.
 
 ## 3. GitHub discovery metadata
