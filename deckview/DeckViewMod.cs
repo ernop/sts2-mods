@@ -306,21 +306,34 @@ internal static class NCardGrid_CardPadding_Patch
 
 // --- Visible "Mini-cards" toggle across every shrunk card-grid screen --------------------
 //
-// Attached to:
-//   * NCardsViewScreen (deck view & simple cards view) — stacked cleanly above _showUpgrades
-//   * NCardPileScreen (draw / discard / exhaust piles) — anchored cleanly bottom-left above BackButton
-//   * NCardLibrary — added to the filter tickbox cluster (or placed below _viewMultiplayerCards)
-//   * NCardGridSelectionScreen (all 6 deck/pile card-select screens) — anchored bottom-left &
-//     registered with _peekButton so Peek hides it alongside the grid.
+// Attached to every shrunk card-grid screen, consistently in the bottom-left:
+//   * NCardsViewScreen (deck view & simple cards view) — paired tightly above %Upgrades
+//   * NDeckUpgradeSelectScreen & NDeckTransformSelectScreen — paired tightly above %Upgrades
+//     (and placed behind their full-screen confirmation preview overlays)
+//   * NCombatPileCardSelectScreen & NSimpleCardSelectScreen — stacked cleanly above %DrawPile
+//     when CombatPiles is visible, otherwise bottom-left
+//   * NDeckCardSelectScreen & NDeckEnchantSelectScreen — bottom-left behind preview overlays
+//   * NCardPileScreen (draw / discard / exhaust piles) — bottom-left below BackButton
+//   * NCardLibrary — added to the sidebar filter tickbox cluster with per-screen metrics
+//   * All 6 NCardGridSelectionScreen subclasses also register with _peekButton so Peek hides it.
 //
-// Positions recompute on viewport/screen resize, and focus-neighbor cleanup uses one static list
-// instead of per-open ModRuntime.Disabled lambda subscriptions (no closure leak).
+// Positions recompute on viewport/screen resize and anchor visibility changes, and focus-neighbor
+// cleanup uses one static list instead of per-open ModRuntime.Disabled lambda subscriptions.
 internal static class MiniCardsToggleRegistry
 {
     private const string AddedMeta = "minicards_toggle";
     private const float EdgeMargin = 24f;
     private const float StackGap = 10f;
     private const float SiblingStackGap = 4f;
+
+    private static readonly string[] PreviewOverlayNames =
+    {
+        "PreviewContainer",
+        "UpgradeMultiPreviewContainer",
+        "UpgradeSinglePreviewContainer",
+        "EnchantMultiPreviewContainer",
+        "EnchantSinglePreviewContainer",
+    };
 
     private static readonly List<ToggleSwitch> _toggles = new();
     private static readonly List<(Control Control, NodePath PreviousTop)> _focusRestores = new();
@@ -354,17 +367,38 @@ internal static class MiniCardsToggleRegistry
             t.SetOn(on);
     }
 
+    private static void PlaceBehindPreviewOverlays(Control host, ToggleSwitch toggle)
+    {
+        int firstOverlayIndex = -1;
+        foreach (string name in PreviewOverlayNames)
+        {
+            Node? overlay = host.GetNodeOrNull(name);
+            if (overlay != null && overlay.GetParent() == host)
+            {
+                int idx = overlay.GetIndex();
+                if (firstOverlayIndex < 0 || idx < firstOverlayIndex)
+                    firstOverlayIndex = idx;
+            }
+        }
+        if (firstOverlayIndex >= 0)
+            host.MoveChild(toggle, firstOverlayIndex);
+    }
+
     internal static void AnchorAboveControl(
         Control host, ToggleSwitch toggle, Control? anchor, bool wireFocus,
-        Control? siblingVisuals = null, Control? siblingLabel = null)
+        Control? siblingVisuals = null, Control? siblingLabel = null,
+        bool placeBehindPreviews = false)
     {
         host.AddChild(toggle);
+        if (placeBehindPreviews)
+            PlaceBehindPreviewOverlays(host, toggle);
+
         void Reposition()
         {
             if (!GodotObject.IsInstanceValid(host) || !GodotObject.IsInstanceValid(toggle) || !host.IsInsideTree())
                 return;
             if (siblingVisuals != null || siblingLabel != null)
-                GameStyle.ConfigureToggleMetrics(host, siblingVisuals, siblingLabel);
+                toggle.ApplyMetrics(GameStyle.MeasureSibling(host, siblingVisuals, siblingLabel));
 
             if (anchor != null && GodotObject.IsInstanceValid(anchor) && anchor.IsVisibleInTree())
             {
@@ -385,7 +419,7 @@ internal static class MiniCardsToggleRegistry
                     : anchorLocal.X;
                 float gap = siblingVisuals != null ? SiblingStackGap : StackGap;
 
-                float minX = siblingVisuals != null ? 8f : EdgeMargin;
+                float minX = siblingVisuals != null ? 8f : 15f;
                 float x = Mathf.Clamp(desiredX, minX, maxX);
                 float y = Mathf.Clamp(anchorLocal.Y - toggle.Size.Y - gap, EdgeMargin, maxY);
                 toggle.Position = new Vector2(x, y);
@@ -408,14 +442,28 @@ internal static class MiniCardsToggleRegistry
         Reposition();
         Callable.From(Reposition).CallDeferred();
         host.Connect(Control.SignalName.Resized, Callable.From(Reposition));
+        if (anchor != null && GodotObject.IsInstanceValid(anchor))
+            anchor.Connect(CanvasItem.SignalName.VisibilityChanged, Callable.From(Reposition));
     }
 
-    internal static void AttachInLibrary(Control host, ToggleSwitch toggle, Control? siblingTickbox)
+    internal static void AttachInLibrary(
+        Control host, ToggleSwitch toggle, Control? siblingTickbox,
+        Control? siblingVisuals = null, Control? siblingLabel = null)
     {
+        void RefreshLibraryMetrics()
+        {
+            if (!GodotObject.IsInstanceValid(host) || !GodotObject.IsInstanceValid(toggle) || !host.IsInsideTree())
+                return;
+            if (siblingVisuals != null || siblingLabel != null)
+                toggle.ApplyMetrics(GameStyle.MeasureSibling(host, siblingVisuals, siblingLabel));
+        }
+
         if (siblingTickbox != null && GodotObject.IsInstanceValid(siblingTickbox)
             && siblingTickbox.GetParent() is BoxContainer box)
         {
             box.AddChild(toggle);
+            RefreshLibraryMetrics();
+            Callable.From(RefreshLibraryMetrics).CallDeferred();
             return;
         }
 
@@ -424,6 +472,7 @@ internal static class MiniCardsToggleRegistry
         {
             if (!GodotObject.IsInstanceValid(host) || !GodotObject.IsInstanceValid(toggle) || !host.IsInsideTree())
                 return;
+            RefreshLibraryMetrics();
             if (siblingTickbox != null && GodotObject.IsInstanceValid(siblingTickbox) && siblingTickbox.IsVisibleInTree())
             {
                 Vector2 local = host.GetGlobalTransformWithCanvas().AffineInverse() * siblingTickbox.GlobalPosition;
@@ -472,14 +521,13 @@ internal static class NCardsViewScreen_Toggle_Patch
             var upgrades = ShowUpgradesField.GetValue(__instance) as Control;
             Control? label = __instance.GetNodeOrNull("%ViewUpgradesLabel") as Control;
             Control? visuals = (upgrades?.GetNodeOrNull("%TickboxVisuals") ?? __instance.GetNodeOrNull("%TickboxVisuals")) as Control;
-            GameStyle.ConfigureToggleMetrics(__instance, visuals, label);
 
             ToggleSwitch toggle = MiniCardsToggleRegistry.CreateToggle();
             MiniCardsToggleRegistry.AnchorAboveControl(
                 __instance, toggle, upgrades, wireFocus: true,
                 siblingVisuals: visuals, siblingLabel: label);
             Log.Info($"[DeckView] mini-cards toggle on {__instance.GetType().Name} " +
-                     $"font={GameStyle.ToggleFontSize}px box={GameStyle.ToggleBoxSize:0.#}px gap={GameStyle.ToggleBoxGap:0.#}px");
+                     $"font={toggle.FontSize}px box={toggle.BoxSize:0.#}px gap={toggle.BoxGap:0.#}px");
         }
         catch (Exception ex)
         {
@@ -491,8 +539,6 @@ internal static class NCardsViewScreen_Toggle_Patch
 [HarmonyPatch(typeof(NCardPileScreen), "_Ready")]
 internal static class NCardPileScreen_Toggle_Patch
 {
-    private static readonly FieldInfo BackButtonField = Reflect.Field(typeof(NCardPileScreen), "_backButton");
-
     private static void Postfix(NCardPileScreen __instance)
     {
         if (!ModRuntime.Enabled) return;
@@ -500,9 +546,8 @@ internal static class NCardPileScreen_Toggle_Patch
         {
             if (!MiniCardsToggleRegistry.TryMarkHost(__instance))
                 return;
-            var backButton = BackButtonField.GetValue(__instance) as Control;
             ToggleSwitch toggle = MiniCardsToggleRegistry.CreateToggle();
-            MiniCardsToggleRegistry.AnchorAboveControl(__instance, toggle, backButton, wireFocus: false);
+            MiniCardsToggleRegistry.AnchorAboveControl(__instance, toggle, anchor: null, wireFocus: false);
         }
         catch (Exception ex)
         {
@@ -528,12 +573,13 @@ internal static class NCardLibrary_Toggle_Patch
             var upgrades = ViewUpgradesField.GetValue(__instance) as Control;
             var multiplayer = ViewMultiplayerField.GetValue(__instance) as Control;
             Control? visuals = upgrades?.GetNodeOrNull("%TickboxVisuals") as Control;
-            Control? label = upgrades?.GetNodeOrNull<Control>("%Label");
-            if (visuals != null || label != null)
-                GameStyle.ConfigureToggleMetrics(__instance, visuals, label);
+            Control? label = upgrades?.GetNodeOrNull<Control>("Label")
+                          ?? upgrades?.GetNodeOrNull<Control>("%Label");
 
             ToggleSwitch toggle = MiniCardsToggleRegistry.CreateToggle();
-            MiniCardsToggleRegistry.AttachInLibrary(__instance, toggle, multiplayer ?? upgrades);
+            MiniCardsToggleRegistry.AttachInLibrary(
+                __instance, toggle, multiplayer ?? upgrades,
+                siblingVisuals: visuals, siblingLabel: label);
         }
         catch (Exception ex)
         {
@@ -557,7 +603,33 @@ internal static class NCardGridSelectionScreen_Toggle_Patch
 
             var peekButton = PeekButtonField.GetValue(__instance) as NPeekButton;
             ToggleSwitch toggle = MiniCardsToggleRegistry.CreateToggle();
-            MiniCardsToggleRegistry.AnchorAboveControl(__instance, toggle, peekButton, wireFocus: false);
+
+            // NDeckUpgradeSelectScreen and NDeckTransformSelectScreen share the same bottom-left
+            // ViewUpgrades tickbox as NCardsViewScreen — pair Mini-cards right above it instead of
+            // falling back on top of it when PeekButton is hidden outside combat.
+            Control? upgrades = __instance.GetNodeOrNull<Control>("%Upgrades");
+            if (upgrades != null)
+            {
+                Control? visuals = upgrades.GetNodeOrNull<Control>("%TickboxVisuals")
+                                ?? __instance.GetNodeOrNull<Control>("%TickboxVisuals");
+                Control? label = __instance.GetNodeOrNull<Control>("%ViewUpgradesLabel");
+                MiniCardsToggleRegistry.AnchorAboveControl(
+                    __instance, toggle, upgrades, wireFocus: true,
+                    siblingVisuals: visuals, siblingLabel: label,
+                    placeBehindPreviews: true);
+                Log.Info($"[DeckView] mini-cards toggle on {__instance.GetType().Name} " +
+                         $"font={toggle.FontSize}px box={toggle.BoxSize:0.#}px gap={toggle.BoxGap:0.#}px");
+            }
+            else
+            {
+                // Combat selection screens place DrawPile in the bottom-left; stack cleanly above
+                // it when visible, otherwise sit in the empty bottom-left corner.
+                Control? drawPile = __instance.GetNodeOrNull<Control>("%DrawPile");
+                MiniCardsToggleRegistry.AnchorAboveControl(
+                    __instance, toggle, drawPile, wireFocus: false,
+                    placeBehindPreviews: true);
+            }
+
             if (peekButton != null && GodotObject.IsInstanceValid(peekButton))
                 peekButton.AddTargets(toggle);
         }

@@ -171,7 +171,6 @@ internal static class HookCatalog
         Field(typeof(NCardsViewScreen), "_showUpgrades", missing);
 
         Method(typeof(NCardPileScreen), "_Ready", missing);
-        Field(typeof(NCardPileScreen), "_backButton", missing);
 
         Method(typeof(NCardLibrary), "_Ready", missing);
         Field(typeof(NCardLibrary), "_viewUpgrades", missing);

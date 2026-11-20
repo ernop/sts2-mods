@@ -69,7 +69,6 @@ MegaCrit.Sts2.Core.Nodes.Cards.Holders.NGridCardHolder|OnFocus
 MegaCrit.Sts2.Core.Nodes.Screens.NCardsViewScreen|ConnectSignals
 MegaCrit.Sts2.Core.Nodes.Screens.NCardsViewScreen|_showUpgrades
 MegaCrit.Sts2.Core.Nodes.Screens.NCardPileScreen|_Ready
-MegaCrit.Sts2.Core.Nodes.Screens.NCardPileScreen|_backButton
 MegaCrit.Sts2.Core.Nodes.Screens.CardLibrary.NCardLibrary|_Ready
 MegaCrit.Sts2.Core.Nodes.Screens.CardLibrary.NCardLibrary|_viewUpgrades
 MegaCrit.Sts2.Core.Nodes.Screens.CardLibrary.NCardLibrary|_viewMultiplayerCards

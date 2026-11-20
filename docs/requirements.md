@@ -33,17 +33,28 @@ Cross-cutting policies in "Invariants" below are mandatory.
   overlapping enlarged hitboxes are suppressed and `GridHoverGate` drives both hover and unhover
   atomically from resting `SmallScale` slots (instant 0s hover/unhover, zero flicker, zero stuck-big
   cards, zero idle work on hidden grids). Controller/keyboard navigation runs 100% vanilla.
-- **[done]** Visible **"Mini-cards" toggle** on **every shrunk screen family** — deck/simple view
-  (tightly paired in the bottom-left gutter right above vanilla *View Upgrades*, leaving vanilla's
-  node untouched — settled 2026-11-20: left gutter is the only cross-screen collision-free corner
-  that never overlaps 4+ row decks or `Confirm`/`CombatPiles`), draw/discard/exhaust piles (above
-  Back), card library (in filter cluster), and deck card-select screens (above Peek and hidden when
-  peeking) — **on by default**, responsive on resize, exact vanilla checkbox, bold label font
-  (`kreon_bold_glyph_space_one`), and box-to-label gap (measured live from vanilla's `View Upgrades`
-  tickbox glyph and label in host-local coordinates: ~38.4 px box, ~20–21 px scaled bold font,
-  ~5 px box-to-label gap, painted box left edges aligned pixel-for-pixel), hotkey **T**
-  (guarded against text-input focus such as Card Library search, modifiers, transitions, and
-  modals). Rebuilds live even when a grid has `CanScroll == false`. Persisted in `user://deckview.cfg`.
+- **[done]** Visible **"Mini-cards" toggle** on **every shrunk screen family**, consistently in
+  the bottom-left:
+  - Deck/simple view (`NCardsViewScreen`) and Upgrade/Transform selection
+    (`NDeckUpgradeSelectScreen`, `NDeckTransformSelectScreen`): tightly paired in the bottom-left
+    gutter right above vanilla `%Upgrades` (*View Upgrades*), leaving vanilla's node untouched
+    (settled 2026-11-20: left gutter is the only cross-screen collision-free corner that never
+    overlaps 4+ row decks or `Confirm`/`CombatPiles`), with per-screen live measurement of box,
+    bold label font (`kreon_bold_glyph_space_one`), and box-to-label gap (~38.4 px box, ~20 px
+    bold font, ~5 px gap, painted box left edges aligned pixel-for-pixel).
+  - Combat card-select screens (`NCombatPileCardSelectScreen`, `NSimpleCardSelectScreen`): stacked
+    above `%DrawPile` when visible, otherwise bottom-left.
+  - Other selection screens (`NDeckCardSelectScreen`, `NDeckEnchantSelectScreen`) and
+    draw/discard/exhaust piles (`NCardPileScreen`): bottom-left below `BackButton`/`Close`.
+  - All 6 `NCardGridSelectionScreen` subclasses place the toggle behind full-screen confirmation
+    preview overlays (`PreviewContainer` / `Upgrade*PreviewContainer` / `Enchant*PreviewContainer`)
+    and register it with `_peekButton` so Peek hides it alongside the grid.
+  - Card library (`NCardLibrary`): inside the sidebar filter cluster (`BottomVBox`) with isolated
+    per-screen metrics (never leaking sidebar metrics to deck/selection screens).
+  - **On by default**, responsive on resize and anchor visibility changes, mouse clicks do not
+    leave a keyboard/controller focus rectangle stuck around the toggle, hotkey **T** (guarded
+    against text-input focus such as Card Library search, modifiers, transitions, and modals).
+    Rebuilds live even when a grid has `CanScroll == false`. Persisted in `user://deckview.cfg`.
 
 ---
 

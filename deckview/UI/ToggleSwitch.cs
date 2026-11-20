@@ -6,6 +6,9 @@ using MegaCrit.Sts2.Core.Logging;
 
 namespace DeckView;
 
+/// <summary>Measured typography and spacing for a single ToggleSwitch instance.</summary>
+internal readonly record struct ToggleMetrics(Font? Font, int FontSize, float BoxSize, float BoxGap);
+
 /// <summary>Shared game-native visual metrics for DeckView controls.</summary>
 internal static class GameStyle
 {
@@ -14,9 +17,12 @@ internal static class GameStyle
     internal static Font? Font { get; private set; }
     internal static Texture2D? Ticked { get; private set; }
     internal static Texture2D? Unticked { get; private set; }
-    internal static int ToggleFontSize { get; private set; } = 21;
-    internal static float ToggleBoxSize { get; private set; } = 38.5f;
-    internal static float ToggleBoxGap { get; private set; } = 5f;
+
+    // Defaults match STS2's scaled bottom-left "View Upgrades" tickbox (27px * 0.75 = 20px,
+    // 38.4px checkbox glyph, ~5px gap) so screens without a View Upgrades sibling look identical.
+    internal const int DefaultFontSize = 20;
+    internal const float DefaultBoxSize = 38.4f;
+    internal const float DefaultBoxGap = 5f;
 
     private static readonly List<ToggleSwitch> Toggles = new();
     private static bool _loaded;
@@ -44,6 +50,15 @@ internal static class GameStyle
         Log.Info($"[DeckView] game style: font={Font != null}, ticked={Ticked != null}, unticked={Unticked != null}");
     }
 
+    internal static ToggleMetrics DefaultMetrics
+    {
+        get
+        {
+            EnsureLoaded();
+            return new ToggleMetrics(Font, DefaultFontSize, DefaultBoxSize, DefaultBoxGap);
+        }
+    }
+
     internal static void Register(ToggleSwitch toggle)
     {
         Toggles.RemoveAll(t => !GodotObject.IsInstanceValid(t));
@@ -53,12 +68,17 @@ internal static class GameStyle
     internal static void Unregister(ToggleSwitch toggle) => Toggles.Remove(toggle);
 
     /// <summary>
-    /// Measure the live vanilla "View upgrades" control in host-local coordinates so DeckView's
-    /// checkbox and label match vanilla STS2 tickboxes pixel-for-pixel.
+    /// Measure a live vanilla sibling tickbox (such as "View Upgrades" or Card Library's filter
+    /// tickboxes) in host-local coordinates without mutating shared metrics for other screens.
     /// </summary>
-    internal static void ConfigureToggleMetrics(Control? host, Control? checkboxVisuals, Control? label)
+    internal static ToggleMetrics MeasureSibling(Control? host, Control? checkboxVisuals, Control? label)
     {
         EnsureLoaded();
+
+        Font? font = Font;
+        float boxSize = DefaultBoxSize;
+        int fontSize = DefaultFontSize;
+        float boxGap = DefaultBoxGap;
 
         Vector2 hostScale = Vector2.One;
         if (host != null && GodotObject.IsInstanceValid(host) && host.IsInsideTree())
@@ -96,7 +116,7 @@ internal static class GameStyle
                 ? label.GetThemeFont("normal_font")
                 : label.GetThemeFont("font");
             if (liveFont != null)
-                Font = liveFont;
+                font = liveFont;
 
             int themed = label is RichTextLabel
                 ? label.GetThemeFontSize("normal_font_size")
@@ -111,24 +131,22 @@ internal static class GameStyle
                 float labelLeftLocal = (invHost * label.GlobalPosition).X;
                 float gap = labelLeftLocal - glyphRightLocal;
                 if (gap >= 1f && gap <= 24f)
-                    ToggleBoxGap = Mathf.Clamp(gap, 2f, 14f);
+                    boxGap = Mathf.Clamp(gap, 2f, 14f);
             }
         }
 
         if (measuredBox > 18f)
-            ToggleBoxSize = Mathf.Clamp(measuredBox, 24f, 52f);
+            boxSize = Mathf.Clamp(measuredBox, 24f, 52f);
 
         if (measuredFont > 16)
-            ToggleFontSize = Mathf.Clamp(measuredFont, 18, 36);
+            fontSize = Mathf.Clamp(measuredFont, 18, 36);
         else if (measuredBox > 18f)
-            ToggleFontSize = Mathf.Clamp(Mathf.RoundToInt(ToggleBoxSize * 0.72f), 18, 36);
+            fontSize = Mathf.Clamp(Mathf.RoundToInt(boxSize * 0.72f), 18, 36);
 
         if (measuredBox <= 18f)
-            ToggleBoxSize = Mathf.Clamp(ToggleFontSize * 1.375f, 24f, 52f);
+            boxSize = Mathf.Clamp(fontSize * 1.375f, 24f, 52f);
 
-        Toggles.RemoveAll(t => !GodotObject.IsInstanceValid(t));
-        foreach (ToggleSwitch toggle in Toggles)
-            toggle.RefreshMetrics();
+        return new ToggleMetrics(font, fontSize, boxSize, boxGap);
     }
 }
 
@@ -141,11 +159,16 @@ internal sealed partial class ToggleSwitch : Control
     private bool _on;
     private readonly string _label;
     private readonly Action<bool> _onToggled;
+    private Font? _font;
     private int _fontSize;
     private float _box;
     private float _gap;
     internal const float Pad = 3f;
     private const float TrackW = 46f;
+
+    internal int FontSize => _fontSize;
+    internal float BoxSize => _box;
+    internal float BoxGap => _gap;
 
     internal ToggleSwitch(string label, bool on, Action<bool> onToggled)
     {
@@ -156,7 +179,7 @@ internal sealed partial class ToggleSwitch : Control
         FocusMode = FocusModeEnum.All;
         GameStyle.EnsureLoaded();
         GameStyle.Register(this);
-        RefreshMetrics();
+        ApplyMetrics(GameStyle.DefaultMetrics);
 
         Connect(CanvasItem.SignalName.Draw, Callable.From(OnDraw));
         Connect(Control.SignalName.GuiInput, Callable.From<InputEvent>(OnGuiInput));
@@ -165,12 +188,13 @@ internal sealed partial class ToggleSwitch : Control
         Connect(Node.SignalName.TreeExiting, Callable.From(() => GameStyle.Unregister(this)));
     }
 
-    internal void RefreshMetrics()
+    internal void ApplyMetrics(ToggleMetrics metrics)
     {
-        _fontSize = GameStyle.ToggleFontSize;
-        _box = GameStyle.ToggleBoxSize;
-        _gap = GameStyle.ToggleBoxGap;
-        Font font = GameStyle.Font ?? GetThemeDefaultFont();
+        _font = metrics.Font;
+        _fontSize = metrics.FontSize;
+        _box = metrics.BoxSize;
+        _gap = metrics.BoxGap;
+        Font font = _font ?? GameStyle.Font ?? GetThemeDefaultFont();
         float textWidth = font.GetStringSize(
             _label, HorizontalAlignment.Left, -1, _fontSize).X;
         float glyphWidth = (GameStyle.Ticked != null || GameStyle.Unticked != null) ? _box : TrackW;
@@ -209,7 +233,9 @@ internal sealed partial class ToggleSwitch : Control
             return;
         if (e is InputEventMouseButton mb && mb.Pressed && mb.ButtonIndex == MouseButton.Left)
         {
-            GrabFocus();
+            // Mouse clicks must not leave a keyboard/controller focus rectangle stuck on the toggle.
+            if (HasFocus())
+                ReleaseFocus();
             Toggle();
             AcceptEvent();
             return;
@@ -253,7 +279,7 @@ internal sealed partial class ToggleSwitch : Control
             labelX = Pad + TrackW + 8f;
         }
 
-        Font font = GameStyle.Font ?? GetThemeDefaultFont();
+        Font font = _font ?? GameStyle.Font ?? GetThemeDefaultFont();
         var textPos = new Vector2(labelX, cy + _fontSize * 0.35f);
         DrawStringOutline(font, textPos, _label, HorizontalAlignment.Left, -1, _fontSize, 6, GameStyle.TextOutlineColor);
         DrawString(font, textPos, _label, HorizontalAlignment.Left, -1, _fontSize, GameStyle.TextColor);
